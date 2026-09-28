@@ -15,6 +15,11 @@ services:
       # The production deploy sets this to true after HTTPS is enforced at
       # Nginx/Cloudflare. Leave development HTTP usable by default.
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      GITLAB_URL: ${GITLAB_URL:-https://gitlab.com}
+      GITLAB_CLIENT_ID: ${GITLAB_CLIENT_ID:-}
+      GITLAB_CLIENT_SECRET: ${GITLAB_CLIENT_SECRET:-}
+      GITLAB_REDIRECT_URI: ${GITLAB_REDIRECT_URI:-}
+      GITLAB_ALLOWED_USER_IDS: ${GITLAB_ALLOWED_USER_IDS:-}
       FISH_STORAGE_BACKEND: ${FISH_STORAGE_BACKEND:-local}
       FISH_CLOUD_API_URL: ${FISH_CLOUD_API_URL:-}
       FISH_API_TOKEN: ${FISH_API_TOKEN:-}

@@ -36,7 +36,7 @@ def _relaunch_in_project_venv() -> None:
 
 _relaunch_in_project_venv()
 
-from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_from_directory, session
 from werkzeug.utils import secure_filename
 
 from backend import cloud_storage
@@ -53,12 +53,15 @@ from backend.backend_config import (
     UPLOAD_CATEGORIES,
 )
 from backend.logbook_store import (
+    active_database_file,
     database_exists,
     initialize_database,
     read_logbook,
     validate_logbook,
     write_logbook,
 )
+from backend.gitlab_auth import configure_gitlab_auth
+from backend.user_storage import user_data_dir
 from backend.bathymetry_service import (
     apply_depth_result,
     lookup_depth,
@@ -181,7 +184,9 @@ def persist_shared_trip_import(media: dict[tuple[str, str], ArchiveMedia], logbo
                 cloud_storage.put_preview(item.category, preview_name, item.preview)
         return storage_write_logbook(logbook, revision)
 
-    with TemporaryDirectory(dir=DATA_DIR) as temporary_directory:
+    temporary_parent = user_data_dir()
+    temporary_parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=temporary_parent) as temporary_directory:
         temporary_root = Path(temporary_directory)
         staged: list[tuple[Path, Path]] = []
         for item in prepared:
@@ -267,13 +272,17 @@ def create_app(config: dict | None = None) -> Flask:
     app.config.update(
         SECRET_KEY=SECRET_KEY,
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Strict",
+        # OAuth returns from GitLab in a top-level cross-site navigation.
+        SESSION_COOKIE_SAMESITE="Lax",
         # Enabled by the production deployment once Cloudflare/Nginx enforce
         # HTTPS. Keep the default off for the documented local HTTP workflow.
         SESSION_COOKIE_SECURE=secure_session_cookie,
     )
     if config:
         app.config.update(config)
+    configure_gitlab_auth(app)
+    if app.config["AUTH_REQUIRED"] and cloud_storage.enabled():
+        raise RuntimeError("GitLab account storage requires FISH_STORAGE_BACKEND=local; the cloud worker is not account scoped.")
     configure_request_security(app)
 
     @app.errorhandler(cloud_storage.CloudStorageError)
@@ -320,11 +329,13 @@ def create_app(config: dict | None = None) -> Flask:
     @app.get("/api/archive")
     def export_archive() -> Response:
         """Download the canonical logbook and uploaded media as a portable archive."""
-        if not cloud_storage.enabled() and not DATABASE_FILE.is_file():
+        if not cloud_storage.enabled() and not active_database_file().is_file():
             return jsonify({"error": "The local SQLite database does not exist yet."}), 404
         logbook = storage_read_logbook()
 
-        with NamedTemporaryFile(prefix="logbook-export-", suffix=".zip", dir=DATA_DIR, delete=False) as temporary:
+        temporary_parent = user_data_dir()
+        temporary_parent.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(prefix="logbook-export-", suffix=".zip", dir=temporary_parent, delete=False) as temporary:
             archive_path = Path(temporary.name)
         try:
           with ZipFile(archive_path, "w", ZIP_STORED, allowZip64=True) as bundle:
@@ -446,7 +457,9 @@ def create_app(config: dict | None = None) -> Flask:
                         )
                     storage_write_logbook(payload)
                     return jsonify({"ok": True})
-                with TemporaryDirectory(dir=DATA_DIR) as temporary_directory:
+                temporary_parent = user_data_dir()
+                temporary_parent.mkdir(parents=True, exist_ok=True)
+                with TemporaryDirectory(dir=temporary_parent) as temporary_directory:
                     temporary_root = Path(temporary_directory)
                     staged_files: list[tuple[str, Path, Path]] = []
                     for name in names:
@@ -961,8 +974,13 @@ def create_app(config: dict | None = None) -> Flask:
     def favicon() -> tuple[str, int]:
         return "", 204
 
-    @app.get("/trips")
     @app.get("/")
+    def home() -> Response:
+        if not app.config["AUTH_REQUIRED"]:
+            return app_page()
+        return redirect("/trips" if session.get("gitlab_user_id") else "/login")
+
+    @app.get("/trips")
     @app.get("/expeditions")
     @app.get("/bests")
     @app.get("/stats")
@@ -983,7 +1001,7 @@ def create_app(config: dict | None = None) -> Flask:
                 mimetype="text/html",
             )
         initial_theme = "dark" if theme == "dark" else "light"
-        return Response(render_template("index.html", initial_theme=initial_theme), mimetype="text/html")
+        return Response(render_template("index.html", initial_theme=initial_theme, account_name=session.get("gitlab_name", ""), auth_required=app.config["AUTH_REQUIRED"]), mimetype="text/html")
 
     @app.get("/static/<path:filename>")
     def static_files(filename: str) -> Response:
@@ -1003,13 +1021,14 @@ app = create_app()
 
 def main() -> None:
     DATA_DIR.mkdir(exist_ok=True)
-    if not database_exists():
-        write_logbook(DEFAULT_LOGBOOK)
-    else:
-        initialize_database()
+    if not app.config["AUTH_REQUIRED"]:
+        if not database_exists():
+            write_logbook(DEFAULT_LOGBOOK)
+        else:
+            initialize_database()
 
     print(f"Selfhostable Fishing Logbook running at http://{HOST}:{PORT}")
-    print(f"Database: {DATABASE_FILE}")
+    print(f"Database root: {DATA_DIR}")
     app.run(host=HOST, port=PORT, threaded=True)
 
 

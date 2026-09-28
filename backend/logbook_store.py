@@ -6,6 +6,7 @@ from datetime import date
 
 from .backend_config import BATHYMETRY_LAKES, DATABASE_FILE, DEFAULT_LOGBOOK, UNIT_OPTIONS, UPLOAD_CATEGORIES
 from . import logbook_repository
+from .user_storage import auth_required, user_data_dir
 
 SCHEMA_VERSION = 2
 PRIVATE_PHOTO_LOCATION_RADIUS_MIN_METERS = 25
@@ -20,11 +21,15 @@ _OBJECT_COLLECTION_KEYS = {"lures", "flashers", "reels", "rods", "rodReelCombos"
 
 
 def database_exists() -> bool:
-    return logbook_repository.exists(DATABASE_FILE)
+    return logbook_repository.exists(active_database_file())
+
+
+def active_database_file():
+    return user_data_dir() / "logbook.sqlite3" if auth_required() else DATABASE_FILE
 
 
 def initialize_database() -> None:
-    logbook_repository.initialize(DATABASE_FILE)
+    logbook_repository.initialize(active_database_file())
 
 
 def read_logbook_file(database_file, *, allow_empty: bool = True) -> dict:
@@ -40,7 +45,7 @@ def read_logbook_file(database_file, *, allow_empty: bool = True) -> dict:
 
 
 def read_logbook() -> dict:
-    return read_logbook_file(DATABASE_FILE)
+    return read_logbook_file(active_database_file())
 
 
 def write_logbook(payload: dict) -> None:
@@ -48,7 +53,7 @@ def write_logbook(payload: dict) -> None:
     if not is_valid:
         raise ValueError(error)
 
-    logbook_repository.write(DATABASE_FILE, payload, _COLLECTION_KEYS, _OBJECT_COLLECTION_KEYS)
+    logbook_repository.write(active_database_file(), payload, _COLLECTION_KEYS, _OBJECT_COLLECTION_KEYS)
 
 
 def _error(path: str, message: str) -> tuple[bool, str]:

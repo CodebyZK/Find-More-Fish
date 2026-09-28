@@ -135,7 +135,6 @@ async function importArchive(event) {
     if (!refreshed.ok) throw new Error("The backup was imported, but the logbook could not be refreshed.");
     logbookRevision = refreshed.headers.get("ETag") || "";
     state = validateState(await refreshed.json());
-    localStorage.setItem(storageKey, JSON.stringify(state));
     renderAll();
     setDatabaseBackupStatus("Database and media archive imported.");
   } catch (error) {

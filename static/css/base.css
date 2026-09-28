@@ -394,6 +394,28 @@ button {
   gap: 10px;
 }
 
+.account-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.account-name {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.account-actions .button {
+  width: auto;
+  white-space: nowrap;
+}
+
 .view-nav {
   flex-wrap: wrap;
   padding: 0;
@@ -545,4 +567,3 @@ button {
 .file-button input {
   display: none;
 }
-

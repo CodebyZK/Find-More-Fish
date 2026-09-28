@@ -1,5 +1,6 @@
 # Local fishing logbook data. This can contain names, locations, notes, and photos.
 data/uploads/
+data/users/
 data/mobile-direct-import.zip
 data/fishing-logbook-v2-mobile-import.zip
 data/fishing-logbook-v2-mobile-import-before-may-7-trip.zip

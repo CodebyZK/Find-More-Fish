@@ -388,6 +388,12 @@
     gap: 8px;
   }
 
+  .account-actions {
+    justify-content: flex-end;
+    padding-left: 0;
+    border-left: 0;
+  }
+
   .stats-page-header {
     align-items: stretch;
     flex-direction: column;
