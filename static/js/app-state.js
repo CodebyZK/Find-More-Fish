@@ -119,15 +119,14 @@ function saveMapNoaaChartsPreference(showCharts) {
 
 async function loadState() {
   if (location.protocol !== "file:") {
-    try {
-      const response = await fetch("/api/logbook");
-      if (response.ok) {
-        logbookRevision = response.headers.get("ETag") || "";
-        return validateState(await response.json());
-      }
-    } catch {
-      // Fall through to browser storage when the server is unavailable.
+    const response = await fetch("/api/logbook");
+    if (response.status === 401) {
+      window.location.assign("/login");
+      throw new Error("Sign in to access your logbook.");
     }
+    if (!response.ok) throw new Error("Could not load your logbook from the server.");
+    logbookRevision = response.headers.get("ETag") || "";
+    return validateState(await response.json());
   }
 
   try {

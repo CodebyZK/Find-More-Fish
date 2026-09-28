@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Sign in · Fishing Logbook</title>
+    <link rel="stylesheet" href="/static/css/login.css" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <div class="login-mark" aria-hidden="true">↝</div>
+      <p class="eyebrow">Fishing Logbook</p>
+      <h1>Your time on the water, all in one place.</h1>
+      <p class="intro">Sign in to keep your trips, catches, gear, and photos in your private logbook.</p>
+      {% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}
+      {% if configured %}
+        <a class="login-button" href="{{ url_for('gitlab_login', next=next_path) }}">Continue with GitLab <span aria-hidden="true">→</span></a>
+      {% else %}
+        <p class="login-error" role="alert">GitLab sign-in has not been configured on this server yet.</p>
+      {% endif %}
+      <p class="login-note">Your GitLab account identifies your logbook. Fishing Logbook only requests access to your basic profile.</p>
+    </main>
+  </body>
+</html>

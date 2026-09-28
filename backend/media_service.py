@@ -18,6 +18,7 @@ from .backend_config import (
     UPLOADS_DIR,
 )
 from .logbook_store import read_logbook
+from .user_storage import auth_required, user_data_dir
 
 
 register_heif_opener()
@@ -26,7 +27,8 @@ register_heif_opener()
 def upload_category_path(category: str) -> Path:
     if category not in UPLOAD_CATEGORIES:
         abort(404)
-    path = UPLOADS_DIR / category
+    root = user_data_dir() / "uploads" if auth_required() else UPLOADS_DIR
+    path = root / category
     path.mkdir(parents=True, exist_ok=True)
     return path
 

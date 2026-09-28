@@ -33,9 +33,4 @@ async function saveState() {
   }
   state = nextState;
   rememberPersistedState(state);
-  try {
-    localStorage.setItem(storageKey, JSON.stringify(state));
-  } catch (error) {
-    console.warn("Could not cache the saved logbook in browser storage.", error);
-  }
 }

@@ -17,5 +17,6 @@
               <button class="button primary" id="newTripButton" type="button">New Trip</button>
               <button class="button primary hidden" id="newExpeditionButton" type="button">New Expedition</button>
             </div>
+            {%- if auth_required %}<div class="account-actions"><span class="account-name" title="Signed in with GitLab">{{ account_name }}</span><button class="button secondary" id="logoutButton" type="button">Sign out</button></div>{% endif %}
           </div>
         </header>

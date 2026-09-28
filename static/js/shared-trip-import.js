@@ -176,7 +176,6 @@ async function confirmSharedTripImport() {
     if (!refreshed.ok) throw new Error("The trip was imported, but the logbook could not be refreshed.");
     logbookRevision = refreshed.headers.get("ETag") || response.headers.get("ETag") || "";
     state = validateState(await refreshed.json());
-    localStorage.setItem(storageKey, JSON.stringify(state));
     renderAll();
     await cleanupDeletedMedia(payload.discardedMedia || []);
     const importedTrip = state.trips.find((trip) => trip.id === payload.tripId);

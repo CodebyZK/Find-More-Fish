@@ -13,6 +13,16 @@ const routeViews = {
   "/settings": "settings"
 };
 
+document.querySelector("#logoutButton")?.addEventListener("click", async () => {
+  try {
+    const response = await protectedFetch("/logout", { method: "POST" });
+    if (!response.ok) throw new Error("Could not sign out");
+    window.location.assign("/login");
+  } catch (error) {
+    alert(error.message || "Could not sign out. Please try again.");
+  }
+});
+
 function viewFromCurrentRoute() {
   const pathname = window.location.pathname.replace(/\/$/, "") || "/";
   return routeViews[pathname.toLowerCase()] || "trips";
@@ -141,6 +151,9 @@ function syncMobileSummaryPanel() {
 
 async function init() {
   syncMobileSummaryPanel();
+  if (location.protocol !== "file:") {
+    try { localStorage.removeItem(storageKey); } catch { /* Browser storage may be unavailable. */ }
+  }
   state = await loadState();
   rememberPersistedState(state);
   applyThemePreference();

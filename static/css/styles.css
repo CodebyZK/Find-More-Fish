@@ -1,4 +1,4 @@
-@import url("base.css");
+@import url("base.css?v=20260928-gitlab-auth-1");
 @import url("locations.css");
 @import url("dialogs.css");
 @import url("trip-media.css");
@@ -19,4 +19,4 @@
 @import url("wiki.css");
 @import url("gallery-inventory.css");
 @import url("theme-dark.css?v=20260920-catch-location-map-3");
-@import url("responsive.css");
+@import url("responsive.css?v=20260928-gitlab-auth-1");
