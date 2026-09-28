@@ -18,7 +18,7 @@ COPY server.py index.html ./
 COPY docker-entrypoint.sh ./
 COPY templates ./templates
 COPY backend ./backend
-COPY scripts/migrate_logbook_v2.py scripts/migrate-cloud-logbook-v2.py ./scripts/
+COPY scripts/migrate_logbook_v2.py scripts/migrate-cloud-logbook-v2.py scripts/reset-cloud-logbook.py ./scripts/
 COPY static ./static
 RUN mkdir -p data/uploads
 

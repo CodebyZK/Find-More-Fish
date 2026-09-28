@@ -16,6 +16,8 @@ __pycache__/
 
 # Local generated files and server logs.
 .env
+.oauth.env
+.oauth.env.*
 tmp/
 relaunch-desktop.ps1
 

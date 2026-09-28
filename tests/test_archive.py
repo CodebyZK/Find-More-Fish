@@ -29,6 +29,7 @@ def test_archive_contains_v2_logbook_and_media_and_import_restores_it() -> None:
 
         with (
             patch.object(logbook_store, "DATABASE_FILE", database),
+            patch("backend.user_storage.DATA_DIR", root),
             patch("server.DATABASE_FILE", database),
             patch("server.DATA_DIR", root),
             patch.object(media_service, "UPLOADS_DIR", uploads),
@@ -119,6 +120,7 @@ def test_archive_round_trip_preserves_logbook_and_media() -> None:
         }
         with (
             patch.object(logbook_store, "DATABASE_FILE", database),
+            patch("backend.user_storage.DATA_DIR", root),
             patch.object(media_service, "UPLOADS_DIR", uploads),
             patch("server.DATA_DIR", root),
             patch("server.DATABASE_FILE", database),

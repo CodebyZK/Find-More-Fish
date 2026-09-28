@@ -87,12 +87,12 @@ deploy_production:
     - job: docker_compose_config_check
       optional: true
   rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_BRANCH == "Website"'
   environment:
     name: production
     url: https://fish.zionkoudijs.com
   before_script:
-    - apk add --no-cache openssh-client
+    - apk add --no-cache openssh-client python3
     - install -d -m 700 ~/.ssh
     - |
       : "${DEPLOY_SSH_KEY:?DEPLOY_SSH_KEY must be configured as a protected CI/CD variable}"
@@ -138,6 +138,37 @@ deploy_production:
       : "${DEPLOY_USER:?DEPLOY_USER must be configured}"
       : "${DEPLOY_PATH:?DEPLOY_PATH must be configured}"
       : "${DEPLOY_DATA_PATH:?DEPLOY_DATA_PATH must be configured}"
+      : "${GITLAB_URL:?GITLAB_URL must be configured for the self-hosted OAuth provider}"
+      : "${GITLAB_CLIENT_ID:?GITLAB_CLIENT_ID must be configured as a protected production variable}"
+      : "${GITLAB_CLIENT_SECRET:?GITLAB_CLIENT_SECRET must be configured as a protected production variable}"
+      : "${GITLAB_REDIRECT_URI:?GITLAB_REDIRECT_URI must be configured as a protected production variable}"
+      umask 077
+      oauth_env=$(mktemp)
+      trap 'rm -f "$oauth_env"' EXIT
+      python3 - "$oauth_env" <<'PY'
+      import os
+      import sys
+
+      values = {
+          "GITLAB_URL": os.environ["GITLAB_URL"],
+          "GITLAB_CLIENT_ID": os.environ["GITLAB_CLIENT_ID"],
+          "GITLAB_CLIENT_SECRET": os.environ["GITLAB_CLIENT_SECRET"],
+          "GITLAB_REDIRECT_URI": os.environ["GITLAB_REDIRECT_URI"],
+      }
+      if os.environ.get("GITLAB_ALLOWED_USER_IDS"):
+          values["GITLAB_ALLOWED_USER_IDS"] = os.environ["GITLAB_ALLOWED_USER_IDS"]
+      for key, value in values.items():
+          if any(char in value for char in "\r\n\0"):
+              raise SystemExit(f"{key} contains unsupported control characters")
+      def quote(value):
+          return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+      with open(sys.argv[1], "w", encoding="utf-8") as stream:
+          for key, value in values.items():
+              stream.write(f"{key}={quote(value)}\n")
+      PY
+      chmod 600 "$oauth_env"
+      scp -o BatchMode=yes -o StrictHostKeyChecking=yes \
+        "$oauth_env" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/.oauth.env.$CI_COMMIT_SHA"
       ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
         "$DEPLOY_USER@$DEPLOY_HOST" /bin/sh -s -- \
         "$DEPLOY_PATH" "$DEPLOY_DATA_PATH" "$CI_COMMIT_SHA" <<'REMOTE_SCRIPT'
@@ -145,12 +176,16 @@ deploy_production:
       DEPLOY_PATH=$1
       DEPLOY_DATA_PATH=$2
       CI_COMMIT_SHA=$3
+      OAUTH_ENV_STAGING="$DEPLOY_PATH/.oauth.env.$CI_COMMIT_SHA"
+      trap 'rm -f "$OAUTH_ENV_STAGING"' EXIT
       cd "$DEPLOY_PATH"
-      git fetch --prune origin
+      git fetch --prune origin Website
       git cat-file -e "$CI_COMMIT_SHA^{commit}"
       git reset --hard "$CI_COMMIT_SHA"
+      mv "$OAUTH_ENV_STAGING" "$DEPLOY_PATH/.oauth.env"
+      chmod 600 "$DEPLOY_PATH/.oauth.env"
       mkdir -p "$DEPLOY_DATA_PATH/uploads"
-      export APP_PORT=8081 FISH_DATA_DIR="$DEPLOY_DATA_PATH" SESSION_COOKIE_SECURE=true COMPOSE_PROJECT_NAME=fish-logbook
+      export APP_PORT=8081 FISH_DATA_DIR="$DEPLOY_DATA_PATH" SESSION_COOKIE_SECURE=true FISH_STORAGE_BACKEND=local FISH_OAUTH_ENV_FILE="$DEPLOY_PATH/.oauth.env" COMPOSE_PROJECT_NAME=fish-logbook
       docker compose build
       if docker compose up -d --remove-orphans --wait --wait-timeout 180; then
         docker compose ps
@@ -171,7 +206,7 @@ deploy_cloudflare_worker:
   image: node:22-alpine
   resource_group: fish-cloudflare-production
   rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_BRANCH == "Website"'
       changes:
         - cloud/worker/**/*
         - .gitlab-ci.yml
