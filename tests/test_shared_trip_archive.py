@@ -140,16 +140,18 @@ def test_shared_trip_export_and_import_preserve_only_required_records() -> None:
             assert preview.status_code == 200
             assert preview.get_json()["people"][0]["suggestedPersonId"] == "local-jose"
 
-            imported = client.post(
-                "/api/shared-trip-archive/import",
-                data={
-                    "archive": (io.BytesIO(archive), "shared-trip.zip"),
-                    "personMappings": json.dumps({"source-jose": "local-jose"}),
-                    "duplicateAction": "add",
-                },
-                headers=csrf(client),
-                content_type="multipart/form-data",
-            )
+            with patch("server.TemporaryDirectory", wraps=tempfile.TemporaryDirectory) as staging:
+                imported = client.post(
+                    "/api/shared-trip-archive/import",
+                    data={
+                        "archive": (io.BytesIO(archive), "shared-trip.zip"),
+                        "personMappings": json.dumps({"source-jose": "local-jose"}),
+                        "duplicateAction": "add",
+                    },
+                    headers=csrf(client),
+                    content_type="multipart/form-data",
+                )
+            assert staging.call_args.kwargs["dir"] == uploads
             assert imported.status_code == 200
             imported_trip_id = imported.get_json()["tripId"]
             stored = logbook_store.read_logbook()

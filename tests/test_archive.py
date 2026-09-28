@@ -49,12 +49,14 @@ def test_archive_contains_v2_logbook_and_media_and_import_restores_it() -> None:
 
             logbook_store.write_logbook(v2({"trips": [{"id": "changed", "title": "Changed", "catches": [], "lostFish": []}]}))
             csrf = client.get("/api/csrf-token").get_json()["csrfToken"]
-            imported = client.post(
-                "/api/archive",
-                data={"archive": (io.BytesIO(exported.data), "fishing-logbook-archive.zip")},
-                headers={"X-CSRF-Token": csrf},
-                content_type="multipart/form-data",
-            )
+            with patch("server.TemporaryDirectory", wraps=tempfile.TemporaryDirectory) as staging:
+                imported = client.post(
+                    "/api/archive",
+                    data={"archive": (io.BytesIO(exported.data), "fishing-logbook-archive.zip")},
+                    headers={"X-CSRF-Token": csrf},
+                    content_type="multipart/form-data",
+                )
+            assert staging.call_args.kwargs["dir"] == uploads
 
             assert imported.status_code == 200
             assert logbook_store.read_logbook()["trips"][0]["id"] == "sqlite-trip"

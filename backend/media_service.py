@@ -24,11 +24,14 @@ from .user_storage import auth_required, user_data_dir
 register_heif_opener()
 
 
+def active_uploads_dir() -> Path:
+    return user_data_dir() / "uploads" if auth_required() else UPLOADS_DIR
+
+
 def upload_category_path(category: str) -> Path:
     if category not in UPLOAD_CATEGORIES:
         abort(404)
-    root = user_data_dir() / "uploads" if auth_required() else UPLOADS_DIR
-    path = root / category
+    path = active_uploads_dir() / category
     path.mkdir(parents=True, exist_ok=True)
     return path
 

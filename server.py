@@ -69,6 +69,7 @@ from backend.bathymetry_service import (
 )
 from backend.request_security import configure_request_security, csrf_token
 from backend.media_service import (
+    active_uploads_dir,
     convert_heif_upload,
     create_upload_preview,
     delete_upload_file,
@@ -184,7 +185,7 @@ def persist_shared_trip_import(media: dict[tuple[str, str], ArchiveMedia], logbo
                 cloud_storage.put_preview(item.category, preview_name, item.preview)
         return storage_write_logbook(logbook, revision)
 
-    temporary_parent = user_data_dir()
+    temporary_parent = active_uploads_dir()
     temporary_parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=temporary_parent) as temporary_directory:
         temporary_root = Path(temporary_directory)
@@ -457,7 +458,7 @@ def create_app(config: dict | None = None) -> Flask:
                         )
                     storage_write_logbook(payload)
                     return jsonify({"ok": True})
-                temporary_parent = user_data_dir()
+                temporary_parent = active_uploads_dir()
                 temporary_parent.mkdir(parents=True, exist_ok=True)
                 with TemporaryDirectory(dir=temporary_parent) as temporary_directory:
                     temporary_root = Path(temporary_directory)
