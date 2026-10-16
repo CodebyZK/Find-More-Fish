@@ -97,7 +97,7 @@ def export_archive() -> tuple[Response, int] | Response:
     return Response(
         chunks(),
         mimetype="application/zip",
-        headers={"Content-Disposition": "attachment; filename=fishing-logbook-archive.zip"},
+        headers={"Content-Disposition": "attachment; filename=fishing-logbook-archive.logbook"},
     )
 
 
@@ -133,7 +133,7 @@ def export_shared_trip_archive(trip_id: str) -> tuple[Response, int] | Response:
         return Response(
             archive.getvalue(),
             mimetype="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="shared-trip{suffix}-{title}.zip"'},
+            headers={"Content-Disposition": f'attachment; filename="shared-trip{suffix}-{title}.trip"'},
         )
     except SharedTripArchiveError as error:
         return jsonify({"error": str(error)}), 400

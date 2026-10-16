@@ -35,10 +35,10 @@ The desktop SQLite file and the mobile native SQLite file are different implemen
 
 | Boundary | Contract |
 |---|---|
-| Full archive | `archiveVersion: 2`, `format: "fishing-logbook-archive"`, `schemaVersion: 2`, `manifest.json`, `logbook.json`, and `media/<category>/<filename>` entries. |
+| Full archive | Downloaded as `.logbook`; the file remains a ZIP containing `archiveVersion: 2`, `format: "fishing-logbook-archive"`, `schemaVersion: 2`, `manifest.json`, `logbook.json`, and `media/<category>/<filename>` entries. |
 | Full document | Every top-level collection in this document is required, including option lists, gear, people, locations, spots, expeditions, and trips. Unknown/additive properties must round-trip. |
 | Mobile local storage | Native SQLite and web IndexedDB are projections of the canonical document; do not copy the desktop SQLite file or depend on mobile table names. |
-| Shared Trip ZIP | `format: "fishing-logbook-shared-trip"`, version 2, containing one trip and only the required people, location/launch, spots, gear, and media. It is not a backup or whole-logbook replacement. |
+| Shared Trip | Downloaded as `.trip`; the file remains a ZIP with `format: "fishing-logbook-shared-trip"`, version 2, containing one trip and only the required people, location/launch, spots, gear, and media. It is not a backup or whole-logbook replacement. |
 
 Mobile archive import currently validates the version and referenced media, then replaces local data only after an explicit user-confirmed operation. The clients do not have continuous synchronization. The desktop whole-document `PUT /api/logbook` is a compatibility/bootstrap path, not a safe offline multi-device sync protocol.
 

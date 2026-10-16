@@ -717,7 +717,7 @@ export async function shareDownloadTripArchive() {
   const blob = await response.blob();
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `shared-trip-${activeShareTrip.date || "share"}.zip`;
+  link.download = `shared-trip-${activeShareTrip.date || "share"}.trip`;
   document.body.append(link);
   link.click();
   link.remove();

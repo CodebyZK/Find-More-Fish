@@ -85,6 +85,8 @@ def csrf(client) -> dict[str, str]:
 def archive_for(client) -> bytes:
     response = client.get("/api/trips/shared-source/shared-archive")
     assert response.status_code == 200
+    assert response.mimetype == "application/zip"
+    assert response.headers["Content-Disposition"].endswith(".trip\"")
     return response.data
 
 
@@ -125,7 +127,7 @@ def test_shared_trip_export_and_import_preserve_only_required_records() -> None:
         fish.logbook.write(target_logbook(), None)
         preview = client.post(
             "/api/shared-trip-archive/preview",
-            data={"archive": (io.BytesIO(archive), "shared-trip.zip")},
+            data={"archive": (io.BytesIO(archive), "shared-trip.trip")},
             headers=csrf(client),
             content_type="multipart/form-data",
         )
@@ -135,7 +137,7 @@ def test_shared_trip_export_and_import_preserve_only_required_records() -> None:
         imported = client.post(
             "/api/shared-trip-archive/import",
             data={
-                "archive": (io.BytesIO(archive), "shared-trip.zip"),
+                "archive": (io.BytesIO(archive), "shared-trip.trip"),
                 "personMappings": json.dumps({"source-jose": "local-jose"}),
                 "duplicateAction": "add",
             },

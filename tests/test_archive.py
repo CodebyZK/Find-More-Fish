@@ -39,7 +39,8 @@ def test_archive_contains_v2_logbook_and_media_and_import_restores_it() -> None:
         exported = fish.client.get("/api/archive")
 
         assert exported.status_code == 200
-        assert exported.headers["Content-Disposition"] == "attachment; filename=fishing-logbook-archive.zip"
+        assert exported.headers["Content-Disposition"] == "attachment; filename=fishing-logbook-archive.logbook"
+        assert exported.mimetype == "application/zip"
         with zipfile.ZipFile(io.BytesIO(exported.data)) as bundle:
             manifest = json.loads(bundle.read("manifest.json"))
             assert manifest["archiveVersion"] == 2
@@ -51,7 +52,7 @@ def test_archive_contains_v2_logbook_and_media_and_import_restores_it() -> None:
         fish.logbook.write(v2({"trips": [{"id": "changed", "title": "Changed", "catches": [], "lostFish": []}]}), None)
         imported = fish.client.post(
             "/api/archive",
-            data={"archive": (io.BytesIO(exported.data), "fishing-logbook-archive.zip")},
+            data={"archive": (io.BytesIO(exported.data), "fishing-logbook-archive.logbook")},
             headers={"X-CSRF-Token": fish.csrf()},
             content_type="multipart/form-data",
         )

@@ -112,7 +112,7 @@ export async function exportArchive() {
     const archive = await response.blob();
     const link = document.createElement("a");
     link.href = URL.createObjectURL(archive);
-    link.download = "fishing-logbook-archive.zip";
+    link.download = "fishing-logbook-archive.logbook";
     link.style.display = "none";
     document.body.append(link);
     link.click();

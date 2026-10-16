@@ -78,22 +78,22 @@
               <section class="settings-section" aria-labelledby="databaseSettingsHeading">
                 <div class="settings-section-copy">
                   <h4 id="databaseSettingsHeading">Database Archive</h4>
-                  <p>Downloads and imports a database.</p>
+                  <p>Downloads and imports a .logbook ZIP archive.</p>
                 </div>
                 <div class="settings-row database-backup-actions">
-                  <button class="button secondary" id="exportDatabaseButton" type="button"><span class="button-loading-icon" aria-hidden="true"></span><span>Export Archive</span></button>
-                  <button class="button secondary" id="importDatabaseButton" type="button"><span class="button-loading-icon" aria-hidden="true"></span><span>Import Archive</span></button>
-                  <input class="visually-hidden" id="importDatabaseInput" type="file" accept=".zip,application/zip" />
+                  <button class="button secondary" id="exportDatabaseButton" type="button"><span class="button-loading-icon" aria-hidden="true"></span><span>Export .logbook</span></button>
+                  <button class="button secondary" id="importDatabaseButton" type="button"><span class="button-loading-icon" aria-hidden="true"></span><span>Import .logbook</span></button>
+                  <input class="visually-hidden" id="importDatabaseInput" type="file" accept=".logbook,.zip,application/zip" />
                   <span class="database-backup-status" id="databaseBackupStatus" role="status" aria-live="polite"></span>
                 </div>
               </section>
               <section class="settings-section" aria-labelledby="sharedTripSettingsHeading">
                 <div class="settings-section-copy">
                   <h4 id="sharedTripSettingsHeading">Shared Trips</h4>
-                  <p>Import a trip shared by another logbook without replacing your database.</p>
+                  <p>Import a .trip ZIP shared by another logbook without replacing your database.</p>
                 </div>
                 <div class="settings-row database-backup-actions">
-                  <button class="button secondary" id="importSharedTripButton" type="button">Import Shared Trip</button>
+                  <button class="button secondary" id="importSharedTripButton" type="button">Import .trip</button>
                 </div>
               </section>
             </div>

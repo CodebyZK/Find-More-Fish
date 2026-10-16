@@ -34,23 +34,23 @@ Success: `200 {"ok": true}` with the new `ETag`. Shape failure: `400 {"error": "
 
 ### `GET /api/archive`
 
-Returns an `archiveVersion` 2 ZIP containing `manifest.json`, the canonical v2 logbook at `logbook.json`, and uploaded media under `media/<category>/`. This format is shared by desktop and mobile and contains no platform-specific database file.
+Returns the `.logbook` download: an `archiveVersion` 2 ZIP containing `manifest.json`, the canonical v2 logbook at `logbook.json`, and uploaded media under `media/<category>/`. This format is shared by desktop and mobile and contains no platform-specific database file.
 
 ### `POST /api/archive`
 
-Imports an archiveVersion 2 logbook/media archive and replaces the current logbook and media after validation. Media files are staged and promoted as one transaction; if installing the logbook fails, every promoted file is rolled back and overwritten files are restored. When the existing database cannot accept SQL, the validated archive is installed into a fresh database and the old file is kept in a recovery folder.
+Imports a `.logbook` file containing an archiveVersion 2 ZIP and replaces the current logbook and media after validation. Media files are staged and promoted as one transaction; if installing the logbook fails, every promoted file is rolled back and overwritten files are restored. When the existing database cannot accept SQL, the validated archive is installed into a fresh database and the old file is kept in a recovery folder. Existing `.zip` logbook archives remain importable.
 
 ### `GET /api/trips/<trip_id>/shared-archive`
 
-Downloads a versioned `fishing-logbook-shared-trip` ZIP for one trip. It includes only that trip, its required people, locations, spots, used gear, and referenced media; unrelated history, preferences, and expeditions are excluded.
+Downloads a `.trip` file containing a versioned `fishing-logbook-shared-trip` ZIP for one trip. It includes only that trip, its required people, locations, spots, used gear, and referenced media; unrelated history, preferences, and expeditions are excluded.
 
 ### `POST /api/shared-trip-archive/preview`
 
-Accepts multipart field `archive` containing a Shared Trip ZIP and returns its trip summary, normalized-name person suggestions, and likely local overlap candidates. It does not change the logbook.
+Accepts multipart field `archive` containing a `.trip` file (ZIP) and returns its trip summary, normalized-name person suggestions, and likely local overlap candidates. It does not change the logbook.
 
 ### `POST /api/shared-trip-archive/import`
 
-Accepts multipart `archive`, JSON `personMappings` (`sourcePersonId` to existing local person ID), `duplicateAction` (`add`, `replace`, or `keep-local`), and `replacementTripId` for `replace`. It merges the one imported trip without replacing unrelated logbook data. Imported media is copied under collision-free filenames. `replace` is allowed only for a candidate returned by preview.
+Accepts multipart `archive` containing a `.trip` file (ZIP), JSON `personMappings` (`sourcePersonId` to existing local person ID), `duplicateAction` (`add`, `replace`, or `keep-local`), and `replacementTripId` for `replace`. It merges the one imported trip without replacing unrelated logbook data. Imported media is copied under collision-free filenames. `replace` is allowed only for a candidate returned by preview.
 
 ## Environmental Proxies
 

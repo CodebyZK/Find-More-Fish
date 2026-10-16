@@ -89,7 +89,7 @@ Legacy database conversion is an offline operation, never a server startup or re
 ```powershell
 py scripts/migrate_logbook_v2.py --database <path-to-legacy.sqlite3>
 py scripts/migrate_logbook_v2.py --database <path-to-legacy.sqlite3> --apply
-py scripts/migrate_logbook_v2.py --archive <path-to-mobile-or-desktop.zip> --apply
+py scripts/migrate_logbook_v2.py --archive <path-to-mobile-or-desktop.logbook> --apply
 ```
 
 The apply command creates a backup, converts known v1 fields to v2 fields, migrates date-first default trip titles to the current species/method/sequence format, validates the result, and rewrites the SQLite database or shared ZIP archive. For an older archive whose referenced files live in a neighboring upload tree, add `--media-root <uploads>` so the script can include those files. The running desktop or mobile application must receive a canonical v2 database/archive.
