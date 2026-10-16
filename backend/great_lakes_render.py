@@ -2,9 +2,9 @@
 
 NOAA's regular grids are uniform in latitude/longitude, but Leaflet stretches
 an image overlay linearly in Web Mercator. Every overlay is therefore warped
-onto Mercator rows so it lines up with the basemap mid-lake, clipped to NOAA's
-fine water mask (not the coarse sampled grid) so colour stays off the land, and
-coloured across the full palette for the values actually being shown.
+onto Mercator rows so it lines up with the basemap mid-lake, clipped to the
+native triangle-mesh boundary when available (with a regular-grid fallback),
+and coloured across the full palette for the values actually being shown.
 """
 
 from __future__ import annotations
@@ -13,8 +13,9 @@ import base64
 import math
 from dataclasses import dataclass
 from io import BytesIO
+from functools import lru_cache
 
-from PIL import Image, ImageChops, ImageFilter, ImageMath, features
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageMath, features
 
 
 TEMPERATURE_COLOR_STOPS = (
@@ -56,6 +57,7 @@ WAVE_HEIGHT_COLOR_STOPS = (
 _MERCATOR_STRIP_PIXELS = 4
 _MAX_OUTPUT_SIZE = 2400
 _FILL_LAYERS = 4
+_NEIGHBOR_OFFSETS = tuple((dx, dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dx or dy)
 
 
 @dataclass(frozen=True)
@@ -102,13 +104,15 @@ class GridAxes:
 
 @dataclass(frozen=True)
 class WaterMask:
-    """NOAA wet/dry cells, row 0 being grid row 0; ``wet`` holds 0 or 255 per cell."""
+    """NOAA wet/dry cells and optional native boundary rings; ``wet`` is 0 or 255 per cell."""
 
     rows: int
     columns: int
     y_stride: int
     x_stride: int
     wet: bytes
+    rings: tuple = ()
+    depth_limited: bool = False
 
     def payload(self, axes: GridAxes) -> dict:
         """Compact form for the browser: row-major bits, least-significant bit first."""
@@ -124,6 +128,7 @@ class WaterMask:
             "longitudeStart": axes.longitude(0),
             "longitudeEnd": axes.longitude((self.columns - 1) * self.x_stride),
             "bits": base64.b64encode(bytes(packed)).decode("ascii"),
+            **({"rings": self.rings, "depthLimited": self.depth_limited} if self.rings else {}),
         }
 
 
@@ -151,7 +156,10 @@ def limit_water_to_depth(water: WaterMask, wet: list[bool], valid: list[bool], r
     keep_fine = keep.transform((water.columns, water.rows), Image.Transform.AFFINE, (sx, 0, 0.5 - 0.5 * sx, 0, sy, 0.5 - 0.5 * sy), Image.Resampling.NEAREST)
     fine = Image.new("L", (water.columns, water.rows))
     fine.putdata(water.wet)
-    return WaterMask(water.rows, water.columns, water.y_stride, water.x_stride, ImageChops.darker(fine, keep_fine).tobytes())
+    return WaterMask(
+        water.rows, water.columns, water.y_stride, water.x_stride,
+        ImageChops.darker(fine, keep_fine).tobytes(), water.rings, True,
+    )
 
 
 @dataclass(frozen=True)
@@ -184,25 +192,16 @@ def fill_invalid(values: list[float], valid: list[bool], rows: int, columns: int
     pad = layers + 1
     width, height = columns + 2 * pad, rows + 2 * pad
     filled_image = Image.new("F", (width, height), 0.0)
-    known_image = Image.new("F", (width, height), 0.0)
-    inside_image = Image.new("F", (width, height), 0.0)
     filled_image.paste(_float_image([value if item else 0.0 for value, item in zip(values, valid)], columns, rows), (pad, pad))
-    known_image.paste(_float_image([1.0 if item else 0.0 for item in valid], columns, rows), (pad, pad))
-    inside_image.paste(1.0, (pad, pad, pad + columns, pad + rows))
-    offsets = [(dx, dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dx or dy]
-    for _ in range(layers):
-        weighted = [ImageChops.offset(filled_image, dx, dy) for dx, dy in offsets]
-        weights = [ImageChops.offset(known_image, dx, dy) for dx, dy in offsets]
+    steps, known_values = _fill_plan(bytes(valid), rows, columns, layers)
+    for count, newly in steps:
+        weighted = [ImageChops.offset(filled_image, dx, dy) for dx, dy in _NEIGHBOR_OFFSETS]
         total = ImageMath.lambda_eval(lambda args: sum(args[f"v{index}"] for index in range(8)), **{f"v{index}": image for index, image in enumerate(weighted)})
-        count = ImageMath.lambda_eval(lambda args: sum(args[f"w{index}"] for index in range(8)), **{f"w{index}": image for index, image in enumerate(weights)})
         # Unfilled cells inside the grid (padding never fills) with at least
         # one filled neighbour.
-        newly = ImageMath.lambda_eval(lambda args: args["min"](args["count"], 1.0) * (1.0 - args["known"]) * args["inside"], count=count, known=known_image, inside=inside_image)
         filled_image = ImageMath.lambda_eval(lambda args: args["filled"] + args["newly"] * args["total"] / args["max"](args["count"], 1e-9), filled=filled_image, newly=newly, total=total, count=count)
-        known_image = ImageMath.lambda_eval(lambda args: args["max"](args["known"], args["newly"]), known=known_image, newly=newly)
     box = (pad, pad, pad + columns, pad + rows)
     filled_values = filled_image.crop(box).getdata()
-    known_values = known_image.crop(box).getdata()
     return [value if known else fallback for value, known in zip(filled_values, known_values)]
 
 
@@ -234,10 +233,12 @@ def gradient_rgb(position: float, stops: tuple[tuple[float, tuple[int, int, int]
     return tuple(round(lower_color[channel] + (upper_color[channel] - lower_color[channel]) * fraction) for channel in range(3))  # type: ignore[return-value]
 
 
+@lru_cache(maxsize=16)
 def _palette(stops: tuple[tuple[float, tuple[int, int, int]], ...]) -> list[int]:
     return [channel for index in range(256) for channel in gradient_rgb(index / 255, stops)]
 
 
+@lru_cache(maxsize=8)
 def _smoothstep_lut(low: int, high: int) -> list[int]:
     lut = []
     for value in range(256):
@@ -255,17 +256,20 @@ def _inverse_mercator(y: float) -> float:
 
 
 def _padded_image(mode: str, values: list[float], rows: int, columns: int, pad: int, replicate: bool) -> Image.Image:
-    width = columns + 2 * pad
-    data = []
-    for padded_row in range(rows + 2 * pad):
-        row = min(rows - 1, max(0, padded_row - pad))
-        inside_row = pad <= padded_row < rows + pad
-        for padded_column in range(width):
-            column = min(columns - 1, max(0, padded_column - pad))
-            inside = inside_row and pad <= padded_column < columns + pad
-            data.append(values[row * columns + column] if inside or replicate else 0)
-    image = Image.new(mode, (width, rows + 2 * pad))
-    image.putdata(data)
+    source = Image.new(mode, (columns, rows))
+    source.putdata(values)
+    if not pad:
+        return source
+    width, height = columns + 2 * pad, rows + 2 * pad
+    image = Image.new(mode, (width, height))
+    image.paste(source, (pad, pad))
+    if replicate:
+        # Stretch the one-pixel borders in Pillow rather than copying every
+        # cell in Python. Corners come from the already extended middle strip.
+        image.paste(source.crop((0, 0, 1, rows)).resize((pad, rows), Image.Resampling.NEAREST), (0, pad))
+        image.paste(source.crop((columns - 1, 0, columns, rows)).resize((pad, rows), Image.Resampling.NEAREST), (columns + pad, pad))
+        image.paste(image.crop((0, pad, width, pad + 1)).resize((width, pad), Image.Resampling.NEAREST), (0, 0))
+        image.paste(image.crop((0, rows + pad - 1, width, rows + pad)).resize((width, pad), Image.Resampling.NEAREST), (0, rows + pad))
     return image
 
 
@@ -307,6 +311,8 @@ def render_overlay(
     resolution: int,
     no_data: list[bool] | None = None,
     no_data_color: tuple[int, int, int] | None = None,
+    *,
+    value_only: bool = False,
 ) -> dict:
     """Render ``grid`` as a Mercator-aligned, shoreline-clipped RGBA overlay.
 
@@ -321,47 +327,18 @@ def render_overlay(
     """
     pad = 2
     source = _padded_image("F", fill_invalid(grid.values, grid.valid, grid.rows, grid.columns), grid.rows, grid.columns, pad, True)
-    mask_source = Image.new("L", (water.columns, water.rows))
-    mask_source.putdata(water.wet)
-
-    # Full-resolution grid-index extents of the water mask's outer cell edges.
-    x_edges = (-0.5 * water.x_stride, (water.columns - 0.5) * water.x_stride)
-    y_edges = (-0.5 * water.y_stride, (water.rows - 0.5) * water.y_stride)
-    west_x, east_x = sorted(x_edges, key=axes.longitude)
-    south, north = sorted(axes.latitude(edge) for edge in y_edges)
-    west, east = axes.longitude(west_x), axes.longitude(east_x)
-    mercator_south, mercator_north = _mercator(south), _mercator(north)
-    width = max(256, min(_MAX_OUTPUT_SIZE, resolution * 4, water.columns * 4))
-    height = max(64, round(width * (mercator_north - mercator_south) / math.radians(east - west)))
-    if height > _MAX_OUTPUT_SIZE:
-        width, height = max(16, round(width * _MAX_OUTPUT_SIZE / height)), _MAX_OUTPUT_SIZE
-
-    def mesh(to_u, to_v) -> list:
-        quads = []
-        for top in range(0, height, _MERCATOR_STRIP_PIXELS):
-            bottom = min(height, top + _MERCATOR_STRIP_PIXELS)
-            top_row = axes.row_index(_inverse_mercator(mercator_north - top / height * (mercator_north - mercator_south)))
-            bottom_row = axes.row_index(_inverse_mercator(mercator_north - bottom / height * (mercator_north - mercator_south)))
-            quads.append(((0, top, width, bottom), (
-                to_u(west_x), to_v(top_row),
-                to_u(west_x), to_v(bottom_row),
-                to_u(east_x), to_v(bottom_row),
-                to_u(east_x), to_v(top_row),
-            )))
-        return quads
-
-    coarse_mesh = mesh(lambda x: x / grid.x_stride + pad + 0.5, lambda y: y / grid.y_stride + pad + 0.5)
+    size, bounds, strips = _projection(axes, water.rows, water.columns, water.y_stride, water.x_stride, resolution)
+    width, height = size
+    coarse_mesh = _mesh(strips, grid.y_stride, grid.x_stride, pad)
     values = source.transform((width, height), Image.Transform.MESH, coarse_mesh, Image.Resampling.BILINEAR)
     span = max(maximum - minimum, 1e-6)
     indices = values.point(lambda value: value * (255 / span) - minimum * 255 / span).convert("L")
-    levels = indices.copy()  # the plain grey levels, for the value image
-    indices.putpalette(_palette(stops))
-    color = indices.convert("RGB")
+    levels = indices if value_only else indices.copy()
+    if not value_only:
+        indices.putpalette(_palette(stops))
+        color = indices.convert("RGB")
 
-    fine_mesh = mesh(lambda x: x / water.x_stride + 0.5, lambda y: y / water.y_stride + 0.5)
-    alpha = mask_source.transform((width, height), Image.Transform.MESH, fine_mesh, Image.Resampling.BILINEAR)
-    pixels_per_cell = width / water.columns
-    alpha = alpha.filter(ImageFilter.GaussianBlur(max(0.8, 0.6 * pixels_per_cell))).point(_smoothstep_lut(96, 160))
+    alpha = _shoreline_alpha(axes, water, resolution)
     value_alpha, mixed = alpha, None
     if no_data is not None and any(no_data):
         # Land cells inherit the no-data state of nearby water, so shoreline
@@ -375,17 +352,112 @@ def render_overlay(
             alpha = ImageChops.multiply(alpha, ImageChops.invert(holes))
             value_alpha = alpha
         else:
-            color = Image.composite(Image.new("RGB", color.size, no_data_color), color, holes)
+            if not value_only:
+                color = Image.composite(Image.new("RGB", color.size, no_data_color), color, holes)
             value_alpha = ImageChops.multiply(alpha, ImageChops.invert(holes))
-            mixed = Image.new("RGB", color.size, no_data_color)
+            mixed = Image.new("RGB", (width, height), no_data_color)
             mixed.putalpha(ImageChops.multiply(alpha, holes))
-    color.putalpha(alpha)
     result = {
-        "imageUrl": _encode(color),
         "valueUrl": _encode_values(Image.merge("RGBA", (levels, levels, levels, value_alpha))),
         "valueRange": [minimum, maximum],
-        "bounds": [[south, west], [north, east]],
+        "bounds": [list(corner) for corner in bounds],
     }
+    if not value_only:
+        color.putalpha(alpha)
+        result["imageUrl"] = _encode(color)
     if mixed is not None:
         result["mixedUrl"] = _encode(mixed)
     return result
+
+
+@lru_cache(maxsize=8)
+def _fill_plan(valid: bytes, rows: int, columns: int, layers: int) -> tuple:
+    """Neighbour counts depend on validity, not on the frame's values.
+
+    Keep eight plans for the four temperature and four velocity grids. The
+    key includes every valid cell so mixed/shallow water gets its own plan.
+    Cached images are read-only inputs to ImageMath, never modified in place.
+    """
+    pad = layers + 1
+    size = (columns + 2 * pad, rows + 2 * pad)
+    known = Image.new("F", size, 0.0)
+    known.paste(_float_image(list(valid), columns, rows), (pad, pad))
+    inside = Image.new("F", size, 0.0)
+    box = (pad, pad, pad + columns, pad + rows)
+    inside.paste(1.0, box)
+    steps = []
+    for _ in range(layers):
+        weights = [ImageChops.offset(known, dx, dy) for dx, dy in _NEIGHBOR_OFFSETS]
+        count = ImageMath.lambda_eval(lambda args: sum(args[f"w{index}"] for index in range(8)), **{f"w{index}": image for index, image in enumerate(weights)})
+        newly = ImageMath.lambda_eval(lambda args: args["min"](args["count"], 1.0) * (1.0 - args["known"]) * args["inside"], count=count, known=known, inside=inside)
+        steps.append((count, newly))
+        known = ImageMath.lambda_eval(lambda args: args["max"](args["known"], args["newly"]), known=known, newly=newly)
+    return tuple(steps), known.crop(box).convert("L").tobytes()
+
+
+@lru_cache(maxsize=32)
+def _projection(axes: GridAxes, rows: int, columns: int, y_stride: int, x_stride: int, resolution: int) -> tuple:
+    """Output bounds and full-grid Mercator strips, shared across fields."""
+    x_edges = (-0.5 * x_stride, (columns - 0.5) * x_stride)
+    y_edges = (-0.5 * y_stride, (rows - 0.5) * y_stride)
+    west_x, east_x = sorted(x_edges, key=axes.longitude)
+    south, north = sorted(axes.latitude(edge) for edge in y_edges)
+    west, east = axes.longitude(west_x), axes.longitude(east_x)
+    mercator_south, mercator_north = _mercator(south), _mercator(north)
+    width = max(256, min(_MAX_OUTPUT_SIZE, resolution * 4, columns * 4))
+    height = max(64, round(width * (mercator_north - mercator_south) / math.radians(east - west)))
+    if height > _MAX_OUTPUT_SIZE:
+        width, height = max(16, round(width * _MAX_OUTPUT_SIZE / height)), _MAX_OUTPUT_SIZE
+    strips = []
+    for top in range(0, height, _MERCATOR_STRIP_PIXELS):
+        bottom = min(height, top + _MERCATOR_STRIP_PIXELS)
+        top_row = axes.row_index(_inverse_mercator(mercator_north - top / height * (mercator_north - mercator_south)))
+        bottom_row = axes.row_index(_inverse_mercator(mercator_north - bottom / height * (mercator_north - mercator_south)))
+        strips.append(((0, top, width, bottom), (west_x, top_row, west_x, bottom_row, east_x, bottom_row, east_x, top_row)))
+    return (width, height), ((south, west), (north, east)), tuple(strips)
+
+
+def _mesh(strips: tuple, y_stride: int, x_stride: int, pad: int = 0) -> list:
+    return [(box, tuple(value / (x_stride if index % 2 == 0 else y_stride) + pad + 0.5
+                        for index, value in enumerate(quad))) for box, quad in strips]
+
+
+@lru_cache(maxsize=8)
+def _shoreline_alpha(axes: GridAxes, water: WaterMask, resolution: int) -> Image.Image:
+    """Immutable alpha shared by depths/frames with exactly the same wet cells.
+
+    Include the mask bytes, not just its dimensions: deep water and changing
+    model grids must never reuse a different shoreline. Eight entries bound
+    the retained output images to at most about 44 MiB per process.
+    """
+    size, _, strips = _projection(axes, water.rows, water.columns, water.y_stride, water.x_stride, resolution)
+    if water.rings:
+        from .great_lakes_shoreline import signed_area
+
+        _, ((south, west), (north, east)), _ = _projection(
+            axes, water.rows, water.columns, water.y_stride, water.x_stride, resolution,
+        )
+        scale = 2
+        traced = Image.new("L", (size[0] * scale, size[1] * scale))
+        draw = ImageDraw.Draw(traced)
+        top, bottom = _mercator(north), _mercator(south)
+        for ring in sorted(water.rings, key=lambda item: abs(signed_area(item)), reverse=True):
+            points = [((longitude - west) / (east - west) * traced.width,
+                       (top - _mercator(latitude)) / (top - bottom) * traced.height)
+                      for longitude, latitude in ring]
+            draw.polygon(points, fill=255 if signed_area(ring) > 0 else 0)
+        alpha = traced.resize(size, Image.Resampling.LANCZOS)
+        if water.depth_limited:
+            source = Image.frombytes("L", (water.columns, water.rows), water.wet)
+            keep = source.transform(
+                size,
+                Image.Transform.MESH,
+                _mesh(strips, water.y_stride, water.x_stride),
+                Image.Resampling.NEAREST,
+            )
+            alpha = ImageChops.darker(alpha, keep)
+        return alpha
+    source = Image.frombytes("L", (water.columns, water.rows), water.wet)
+    alpha = source.transform(size, Image.Transform.MESH, _mesh(strips, water.y_stride, water.x_stride), Image.Resampling.BILINEAR)
+    pixels_per_cell = size[0] / water.columns
+    return alpha.filter(ImageFilter.GaussianBlur(max(0.8, 0.6 * pixels_per_cell))).point(_smoothstep_lut(96, 160))

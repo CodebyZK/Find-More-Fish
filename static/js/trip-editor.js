@@ -127,9 +127,9 @@ export function syncTripFormChrome() {
 
 export function syncTripContinuationGate() {
   const missing = [
-    { value: document.querySelector("#tripDateValue")?.value, label: "Date" },
-    { value: document.querySelector("#tripLocation")?.value, label: "Waterbody" },
-    { value: document.querySelector("#method")?.value, label: "Method" }
+    { value: ui.tripDraft?.date, label: "Date" },
+    { value: ui.tripDraft?.locationId, label: "Waterbody" },
+    { value: ui.tripDraft?.method, label: "Method" }
   ].filter(({ value }) => !String(value || "").trim());
   const complete = missing.length === 0;
   const sections = document.querySelector("#tripContinuationSections");
@@ -484,9 +484,9 @@ export function openTripDialog(trip = null) {
     const initialFocus = continuationReady
       ? els.personRows.querySelector("[data-focus-person-name='true'] .person-name")
       : [
-        { selector: "#tripDate", value: document.querySelector("#tripDateValue")?.value },
-        { selector: "#tripLocation", value: document.querySelector("#tripLocation")?.value },
-        { selector: "#method", value: document.querySelector("#method")?.value }
+        { selector: "#tripDate", value: ui.tripDraft?.date },
+        { selector: "#tripLocation", value: ui.tripDraft?.locationId },
+        { selector: "#method", value: ui.tripDraft?.method }
       ].find(({ value }) => !String(value || "").trim())?.selector;
     (typeof initialFocus === "string" ? document.querySelector(initialFocus) : initialFocus)?.focus({ preventScroll: true });
     ui.tripDraftHydrating = false;

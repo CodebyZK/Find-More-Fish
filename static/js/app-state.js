@@ -133,12 +133,15 @@ export function saveMapNoaaChartsPreference(showCharts) {
 }
 
 export async function loadState() {
+  // A cached document has no server revision and must never enable a save.
+  logbookRevision = "";
   if (location.protocol !== "file:") {
     try {
       const response = await fetch("/api/logbook");
       if (response.ok) {
+        const document = validateState(await response.json());
         logbookRevision = response.headers.get("ETag") || "";
-        return validateState(await response.json());
+        return document;
       }
     } catch {
       // Fall through to browser storage when the server is unavailable.

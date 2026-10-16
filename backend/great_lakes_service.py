@@ -18,7 +18,8 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from array import array
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 from . import great_lakes_cache as gl_cache
@@ -44,11 +45,11 @@ RUN_FINAL_FORECAST_HOUR = 120
 # Forecast choices on the map, in hours from now ("Now" first).
 FORECAST_OFFSETS = (0, 6, 12, 24, 48)
 # The forecast animation: "Now", then every 3 hours on the UTC clock (00, 03,
-# 06 … UTC) out to 48 hours. Frames on fixed clock times are the same NOAA
+# 06 … UTC) out to five days. Frames on fixed clock times are the same NOAA
 # files all through a run, so they are downloaded and drawn once per run
 # rather than again every hour as "Now" moves on.
 ANIMATION_STEP_HOURS = 3
-ANIMATION_SPAN_HOURS = 48
+ANIMATION_SPAN_HOURS = 120
 RUNS_FILE = "runs.json"
 RUNS_MAX_AGE_SECONDS = 15 * 60
 RUNS_DISK_POLL_SECONDS = 30
@@ -57,10 +58,12 @@ _runs_disk_checked = [0.0]
 _runs_lock = threading.Lock()
 _raster_cache: dict[tuple, dict] = {}
 _thermocline_raster_cache: dict[tuple, dict] = {}
-TEMPERATURE_RASTER_RENDER_VERSION = 5
-THERMOCLINE_RASTER_RENDER_VERSION = 29
+TEMPERATURE_RASTER_RENDER_VERSION = 6
+THERMOCLINE_RASTER_RENDER_VERSION = 30
 THERMOCLINE_ERROR_AFTER_SECONDS = 3 * 60 * 60
-CURRENT_RENDER_VERSION = 4
+CURRENT_RENDER_VERSION = 5
+# Match the deepest depth selectable in the Great Lakes map (1,040 ft).
+MAX_DEPTH_METERS = 1040 * 0.3048
 # A requested depth this far below a lake's deepest model level has no water there.
 DEEPEST_LEVEL_TOLERANCE_METERS = 0.5
 # Never stretch the palette across less than this, or model noise in a
@@ -69,9 +72,7 @@ TEMPERATURE_MIN_COLOR_SPAN_C = 3.0
 THERMOCLINE_MIN_COLOR_SPAN_METERS = 2.0
 CURRENT_MIN_COLOR_MAX_METERS_PER_SECOND = 0.08
 CURRENT_RASTER_RESOLUTION = 512
-# The regular grids are ~0.5–1 km; this keeps the static water mask near
-# native resolution (Superior is halved) while bounding its one-time download.
-WATER_MASK_MAX_COLUMNS = 1000
+# Retain every regular-grid point for depth clipping and the fallback water mask.
 _water_mask_cache: dict[tuple, WaterMask] = {}
 THERMOCLINE_REFERENCE_DEPTH_METERS = 1.0  # Use 1 m (~3 ft) to discount a sun-warmed surface skin.
 THERMOCLINE_BOTTOM_CLEARANCE_METERS = 3.048  # Never classify the final 10 ft as a thermocline.
@@ -120,7 +121,6 @@ MAX_PROFILE_CACHE_ENTRIES = 64
 MAX_SAVED_POINT_PROFILES = 512
 # Drawn layers are keyed by run and hour, so older files are never reused.
 RENDERED_MAX_AGE_SECONDS = 3 * 3600
-_build_locks: dict[tuple, threading.Lock] = {}
 _cache_lock = threading.Lock()
 MAX_DATASET_INFO_ENTRIES = 256
 _dds_cache: dict[str, str] = {}
@@ -134,6 +134,9 @@ _mesh_locks: dict[tuple[str, str], threading.Lock] = {}
 MODEL_LAKE_NAMES = {"LSOFS": "Superior", "LEOFS": "Erie", "LOOFS": "Ontario"}
 MICHIGAN_HURON_SPLIT_LONGITUDE = -84.75
 _bathymetry_cache: dict[str, dict] = {}
+_bathymetry_downloads: dict[str, Future] = {}
+_bathymetry_retry_at: dict[str, float] = {}
+_bathymetry_executor = ThreadPoolExecutor(max_workers=len(MODELS), thread_name_prefix="great-lakes-depth")
 
 
 def _forecast_run(model: str, forecast_hour: int) -> dict:
@@ -156,9 +159,9 @@ def select_forecast_run(run: dict, forecast_hour: int, now: float | None = None)
     return {"id": run.get("id"), "error": "No published NOAA file covers the requested forecast hour"}
 
 
-def _thermocline_with_fallback(payload: dict, forecast_hour: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None) -> dict:
+def _thermocline_with_fallback(payload: dict, forecast_hour: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None, *, value_only: bool = False) -> dict:
     """Use the last complete thermocline layer while NOAA is missing one or more lakes."""
-    path = _thermocline_fallback_path(forecast_hour, resolution, models, scale)
+    path = _thermocline_fallback_path(forecast_hour, resolution, models, scale, value_only)
     now = time.time()
     with _cache_lock:
         state = gl_cache.read_json(path)
@@ -208,8 +211,8 @@ def _thermocline_with_fallback(payload: dict, forecast_hour: int, resolution: in
         return payload
 
 
-def _thermocline_fallback_path(forecast_hour: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None):
-    key = (THERMOCLINE_RASTER_RENDER_VERSION, forecast_hour, resolution, models, scale)
+def _thermocline_fallback_path(forecast_hour: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None, value_only: bool = False):
+    key = (THERMOCLINE_RASTER_RENDER_VERSION, forecast_hour, resolution, models, scale, *((True,) if value_only else ()))
     name = hashlib.sha1(repr(key).encode("utf-8")).hexdigest() + ".json"
     return gl_cache.path_for("thermocline-fallbacks", name)
 
@@ -285,8 +288,8 @@ def _complete(payload: dict) -> bool:
     return all(item.get("available", True) for item in payload.get("metadata", {}).get("models", []))
 
 
-def _current_fallback_path(forecast_hour: int, depth: int, models: tuple[str, ...], scale: tuple[float, float] | None):
-    key = (CURRENT_RENDER_VERSION, forecast_hour, depth, models, scale)
+def _current_fallback_path(forecast_hour: int, depth: int, models: tuple[str, ...], scale: tuple[float, float] | None, value_only: bool = False):
+    key = (CURRENT_RENDER_VERSION, forecast_hour, depth, models, scale, *((True,) if value_only else ()))
     name = hashlib.sha1(repr(key).encode("utf-8")).hexdigest() + ".json"
     return gl_cache.path_for("current-fallbacks", name)
 
@@ -323,9 +326,9 @@ def _last_cached_current_payload(forecast_hour: int, depth: int, models: tuple[s
     return None
 
 
-def _currents_with_fallback(payload: dict, forecast_hour: int, depth: int, models: tuple[str, ...], scale: tuple[float, float] | None) -> dict:
+def _currents_with_fallback(payload: dict, forecast_hour: int, depth: int, models: tuple[str, ...], scale: tuple[float, float] | None, *, value_only: bool = False) -> dict:
     """Keep the last complete current map visible when NOAA current files fail."""
-    path = _current_fallback_path(forecast_hour, depth, models, scale)
+    path = _current_fallback_path(forecast_hour, depth, models, scale, value_only)
     now = time.time()
     with _cache_lock:
         state = gl_cache.read_json(path)
@@ -410,31 +413,39 @@ def _shared_payload(memory: dict, key: tuple, build, max_entries: int) -> dict:
     cached = _from_memory(memory, key)
     if cached is not None:
         return cached
-    with _cache_lock:
-        lock = _build_locks.setdefault(key, threading.Lock())
-    try:
-        with lock:
-            cached = _from_memory(memory, key)
-            if cached is not None:
-                return cached
-            shared = gl_cache.read_json(_rendered_path(key))
-            if isinstance(shared, dict):
-                _touch(_rendered_path(key), shared)
-                _cache_store(memory, key, shared, max_entries)
-                _remember_completeness(key, shared)
-                return shared
-            payload = build()
-            if _complete(payload):
-                try:
-                    gl_cache.write_json(_rendered_path(key), payload)
-                except OSError:
-                    pass
-            _cache_store(memory, key, payload, max_entries)
-            _remember_completeness(key, payload)
-            return payload
-    finally:
-        with _cache_lock:
-            _build_locks.pop(key, None)
+    target = _rendered_path(key)
+    shared = gl_cache.read_json(target)
+    with gl_cache.resource_lock("rendered", target.name) if not isinstance(shared, dict) else nullcontext():
+        cached = _from_memory(memory, key)
+        if cached is not None:
+            return cached
+        if not isinstance(shared, dict):
+            shared = gl_cache.read_json(target)
+        if isinstance(shared, dict):
+            _touch(target, shared)
+            _cache_store(memory, key, shared, max_entries)
+            _remember_completeness(key, shared)
+            return shared
+        payload = build()
+        if _complete(payload):
+            try:
+                gl_cache.write_json(target, payload)
+            except OSError:
+                pass
+        _cache_store(memory, key, payload, max_entries)
+        _remember_completeness(key, payload)
+        return payload
+
+
+def _value_only_from_rendered(memory: dict, full_key: tuple) -> dict | None:
+    """Reuse a completed ordinary frame's value image when it is cached."""
+    full = _from_memory(memory, full_key) or gl_cache.read_json(_rendered_path(full_key))
+    if not isinstance(full, dict) or not full.get("rasters"):
+        return None
+    if any(not raster.get("valueUrl") for raster in full["rasters"]):
+        return None
+    return {**full, "rasters": [{key: value for key, value in raster.items() if key != "imageUrl"}
+                                 for raster in full["rasters"]]}
 
 
 def prune_model_hours(model: str, run: dict, keep_hours: set[int]) -> None:
@@ -587,6 +598,12 @@ def discovered_runs(models: tuple[str, ...] = MODELS, refresh: bool = False) -> 
             pass
     with _runs_lock:
         return {model: _runs_state.get(model, {}).get("run", {"error": "NOAA run not discovered"}) for model in models}
+
+
+def known_runs(models: tuple[str, ...] = MODELS) -> dict[str, dict]:
+    """Already discovered runs, without another catalog or disk check."""
+    with _runs_lock:
+        return {model: _runs_state.get(model, {}).get("run", {}) for model in models}
 
 
 def select_forecast_hour(run: dict, forecast_hour: int, now: float | None = None) -> int:
@@ -745,13 +762,14 @@ def _model_volume(kind: str, model: str, forecast_hour: int) -> tuple[dict, int,
     return run, hour, path, variables, volume
 
 
-def _model_depth(kind: str, model: str, forecast_hour: int, depth: float) -> tuple[dict, int, str, dict[str, str], volumes.Volume, int]:
+def _model_depth(kind: str, model: str, forecast_hour: int, depth: float, *, prefetch: bool = True) -> tuple[dict, int, str, dict[str, str], volumes.Volume, int]:
     """One depth level for a map layer, as fast as possible.
 
     Uses the full cached volume when there is one ("Now" is kept warm in the
     background). Otherwise downloads only the requested level for a quick first
-    view and fetches the full volume in the background, so changing depth or
-    switching to the thermocline is fast afterwards.
+    view and, for ordinary map requests, fetches the full volume in the
+    background. Animation frames disable that prefetch: they need one level per
+    frame, and warming every full volume would multiply NOAA traffic.
     """
     run = _forecast_run(model, forecast_hour)
     if "error" in run:
@@ -771,7 +789,8 @@ def _model_depth(kind: str, model: str, forecast_hour: int, depth: float) -> tup
     base_url = f"{THREDDS}/dodsC/{path}"
     level = min(range(len(depths)), key=lambda index: abs(depths[index] - depth))
     sliced = volumes.load_level(kind, model, run["id"], hour, base_url, ny, nx, depths, names, level)
-    volumes.prefetch_volume(kind, model, run["id"], hour, base_url, ny, nx, depths, names)
+    if prefetch:
+        volumes.prefetch_volume(kind, model, run["id"], hour, base_url, ny, nx, depths, names)
     return run, hour, path, variables, sliced, 0
 
 
@@ -821,17 +840,23 @@ def _sample_model(model: str, kind: str, forecast_hour: int, depth: int) -> tupl
     return data, {"model": model, "datasetUrl": f"{THREDDS}/dodsC/{path}", "validTime": datetime.fromtimestamp(valid, timezone.utc).isoformat().replace("+00:00", "Z"), "available": True, "variables": variables, "run": run["id"], "selectedForecastHour": available_hour, "selectedSigmaLayer": layer}
 
 
-def great_lakes_payload(kind: str, forecast_hour: int, depth: int, models: tuple[str, ...] = MODELS, scale: tuple[float, float] | None = None) -> dict:
+def great_lakes_payload(kind: str, forecast_hour: int, depth: int, models: tuple[str, ...] = MODELS, scale: tuple[float, float] | None = None, *, value_only: bool = False) -> dict:
     """Currents (or sampled points) for every lake. ``scale`` fixes the speed shading's (min, max) m/s."""
     depth = snap_depth(depth, models)
     if kind == "currents":
-        cache_key = (CURRENT_RENDER_VERSION, _data_key(models, forecast_hour), depth, models, scale, _cache_bucket())
-        payload = _shared_payload(_current_payload_cache, cache_key, lambda: _build_payload(kind, forecast_hour, depth, models, scale), MAX_PAYLOAD_CACHE_ENTRIES)
-        return _currents_with_fallback(payload, forecast_hour, depth, models, scale)
+        base_key = (CURRENT_RENDER_VERSION, _data_key(models, forecast_hour), depth, models, scale)
+        cache_key = (*base_key, *((True,) if value_only else ()), _cache_bucket())
+        reused = _value_only_from_rendered(_current_payload_cache, (*base_key, cache_key[-1])) if value_only else None
+        payload = reused or _shared_payload(_current_payload_cache, cache_key, lambda: _build_payload(kind, forecast_hour, depth, models, scale, value_only=value_only), MAX_PAYLOAD_CACHE_ENTRIES)
+        result = _currents_with_fallback(payload, forecast_hour, depth, models, scale, value_only=value_only)
+        if value_only and result.get("rasters"):
+            return {**result, "rasters": [{key: value for key, value in raster.items() if key != "imageUrl"}
+                                           for raster in result["rasters"]]}
+        return result
     return _build_payload(kind, forecast_hour, depth, models)
 
 
-def _build_payload(kind: str, forecast_hour: int, depth: int, models: tuple[str, ...], scale: tuple[float, float] | None = None, *, render: bool = True) -> dict:
+def _build_payload(kind: str, forecast_hour: int, depth: int, models: tuple[str, ...], scale: tuple[float, float] | None = None, *, render: bool = True, value_only: bool = False) -> dict:
     selected_models, data, model_metadata, fields, render_inputs = models, [], [], [], []
 
     def load_model(model: str) -> tuple[list[dict], dict, dict | None]:
@@ -839,7 +864,7 @@ def _build_payload(kind: str, forecast_hour: int, depth: int, models: tuple[str,
             points, metadata = _sample_model(model, kind, forecast_hour, depth)
             return points, metadata, None
         try:
-            field = _current_grid_field(model, forecast_hour, depth)
+            field = _current_grid_field(model, forecast_hour, depth, prefetch=not value_only)
         except LakeTooShallow as shallow:
             return [], shallow.metadata(), None
         except Exception:
@@ -888,7 +913,7 @@ def _build_payload(kind: str, forecast_hour: int, depth: int, models: tuple[str,
             )
             maximum = max(maximum, CURRENT_MIN_COLOR_MAX_METERS_PER_SECOND)
         if render:
-            rasters = _render_rasters(render_inputs, CURRENT_SPEED_COLOR_STOPS, 0.0, maximum, CURRENT_RASTER_RESOLUTION)
+            rasters = _render_rasters(render_inputs, CURRENT_SPEED_COLOR_STOPS, 0.0, maximum, CURRENT_RASTER_RESOLUTION, value_only=value_only)
         metadata["minSpeedMetersPerSecond"], metadata["maxSpeedMetersPerSecond"] = 0.0, maximum
     payload = {"data": data, "fields": fields if kind == "currents" else None, "metadata": metadata}
     if kind == "currents":
@@ -897,12 +922,12 @@ def _build_payload(kind: str, forecast_hour: int, depth: int, models: tuple[str,
 
 
 def _water_mask(model: str, path: str, ny: int, nx: int) -> WaterMask:
-    """NOAA's near-native wet/dry mask; static per model grid, so cached on disk."""
+    """The traced native shoreline plus a complete regular-grid fallback mask."""
     key = (model, ny, nx)
     cached = _water_mask_cache.get(key)
     if cached is not None:
         return cached
-    stride = max(1, math.ceil(nx / WATER_MASK_MAX_COLUMNS))
+    stride = 1
     rows, cols = (ny - 1) // stride + 1, (nx - 1) // stride + 1
     disk_path = gl_cache.path_for("static", model, f"water-mask-{ny}x{nx}-s{stride}.bin")
     record = gl_cache.read_record(disk_path)
@@ -914,7 +939,15 @@ def _water_mask(model: str, path: str, ny: int, nx: int) -> WaterMask:
             raise RuntimeError("NOAA water mask dimensions were incomplete")
         wet = bytes(255 if value > 0 else 0 for value in values)
         gl_cache.write_record(disk_path, {"rows": rows, "columns": cols}, {"wet": array("B", wet)})
-    mask = WaterMask(rows, cols, stride, stride, wet)
+    from .great_lakes_shoreline import model_rings
+
+    # If native mesh fields are temporarily unavailable, return the complete
+    # regular-grid mask but leave it uncached in memory so the next draw retries.
+    try:
+        rings = model_rings(model, path)
+    except Exception:
+        return WaterMask(rows, cols, stride, stride, wet)
+    mask = WaterMask(rows, cols, stride, stride, wet, rings)
     with _cache_lock:
         _water_mask_cache[key] = mask
     return mask
@@ -967,10 +1000,10 @@ def model_render_grid(model: str) -> dict:
     }
 
 
-def _render_rasters(inputs: list[dict], stops: tuple, minimum: float, maximum: float, resolution: int) -> list[dict]:
+def _render_rasters(inputs: list[dict], stops: tuple, minimum: float, maximum: float, resolution: int, *, value_only: bool = False) -> list[dict]:
     """Render each lake with one shared colour range so adjoining lakes compare directly."""
     def render(item: dict) -> dict:
-        image = render_overlay(item["grid"], item["axes"], item["water"], stops, minimum, maximum, resolution, item.get("noData"), item.get("noDataColor"))
+        image = render_overlay(item["grid"], item["axes"], item["water"], stops, minimum, maximum, resolution, item.get("noData"), item.get("noDataColor"), value_only=value_only)
         return {**image, "model": item["model"], "validTime": item["validTime"], **item.get("extra", {})}
 
     if not inputs:
@@ -1175,8 +1208,8 @@ def _filter_spatial_thermocline_outliers(values: list[float | None], rows: int, 
     return filtered
 
 
-def _regular_temperature_grid(model: str, forecast_hour: int, depth: int, resolution: int) -> tuple[dict, dict, dict]:
-    run, hour, path, variables, volume, layer = _model_depth("temperature", model, forecast_hour, depth)
+def _regular_temperature_grid(model: str, forecast_hour: int, depth: int, resolution: int, *, prefetch: bool = True) -> tuple[dict, dict, dict]:
+    run, hour, path, variables, volume, layer = _model_depth("temperature", model, forecast_hour, depth, prefetch=prefetch)
     values = volume.level(variables["temperature"], layer)
     valid = [bool(wet) and math.isfinite(temp) and -5 <= temp <= 45 for wet, temp in zip(volume.wet, values)]
     if not any(valid):
@@ -1224,11 +1257,16 @@ def snap_depth(depth: float, models: tuple[str, ...] = MODELS) -> float:
     return min(levels, key=lambda level: abs(level - depth)) if levels else depth
 
 
-def great_lakes_temperature_rasters(forecast_hour: int, depth: int, resolution: int, models: tuple[str, ...] = MODELS, scale: tuple[float, float] | None = None) -> dict:
+def great_lakes_temperature_rasters(forecast_hour: int, depth: int, resolution: int, models: tuple[str, ...] = MODELS, scale: tuple[float, float] | None = None, *, value_only: bool = False) -> dict:
     """Water temperature for every lake. ``scale`` fixes the palette's (min, max) °C instead of fitting this frame."""
     depth = snap_depth(depth, models)
-    cache_key = (TEMPERATURE_RASTER_RENDER_VERSION, _data_key(models, forecast_hour), depth, resolution, models, scale, _cache_bucket())
-    return _shared_payload(_raster_cache, cache_key, lambda: _build_temperature_rasters(_temperature_fields_key(forecast_hour, depth, resolution, models), forecast_hour, depth, resolution, models, scale), MAX_FIELD_CACHE_ENTRIES)
+    base_key = (TEMPERATURE_RASTER_RENDER_VERSION, _data_key(models, forecast_hour), depth, resolution, models, scale)
+    cache_key = (*base_key, *((True,) if value_only else ()), _cache_bucket())
+    if value_only:
+        reused = _value_only_from_rendered(_raster_cache, (*base_key, cache_key[-1]))
+        if reused is not None:
+            return reused
+    return _shared_payload(_raster_cache, cache_key, lambda: _build_temperature_rasters(_temperature_fields_key(forecast_hour, depth, resolution, models), forecast_hour, depth, resolution, models, scale, value_only=value_only), MAX_FIELD_CACHE_ENTRIES)
 
 
 def _temperature_fields_key(forecast_hour: int, depth: float, resolution: int, models: tuple[str, ...]) -> tuple:
@@ -1236,12 +1274,12 @@ def _temperature_fields_key(forecast_hour: int, depth: float, resolution: int, m
     return (TEMPERATURE_RASTER_RENDER_VERSION, _data_key(models, forecast_hour), depth, resolution, models, _cache_bucket())
 
 
-def _temperature_inputs(forecast_hour: int, depth: int, resolution: int, models: tuple[str, ...]) -> tuple[list[dict], list[dict], list[dict]]:
+def _temperature_inputs(forecast_hour: int, depth: int, resolution: int, models: tuple[str, ...], *, prefetch: bool = True) -> tuple[list[dict], list[dict], list[dict]]:
     selected_models, inputs, model_metadata, fields = models, [], [], []
     # NOAA serves one independent grid per lake. Fetch those grids in
     # parallel so first paint does not wait four times in sequence.
     with ThreadPoolExecutor(max_workers=len(selected_models)) as executor:
-        futures = {model: executor.submit(_regular_temperature_grid, model, forecast_hour, depth, resolution) for model in selected_models}
+        futures = {model: executor.submit(_regular_temperature_grid, model, forecast_hour, depth, resolution, prefetch=prefetch) for model in selected_models}
         for model in selected_models:
             future = futures[model]
             try:
@@ -1256,8 +1294,8 @@ def _temperature_inputs(forecast_hour: int, depth: int, resolution: int, models:
     return inputs, model_metadata, fields
 
 
-def _build_temperature_rasters(fields_key: tuple, forecast_hour: int, depth: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None = None, *, render: bool = True) -> dict:
-    inputs, model_metadata, fields = _temperature_inputs(forecast_hour, depth, resolution, models)
+def _build_temperature_rasters(fields_key: tuple, forecast_hour: int, depth: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None = None, *, render: bool = True, value_only: bool = False) -> dict:
+    inputs, model_metadata, fields = _temperature_inputs(forecast_hour, depth, resolution, models, prefetch=not value_only)
     _cache_store(_temperature_field_cache, fields_key, fields, MAX_FIELD_CACHE_ENTRIES)
     metadata = {"generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "forecastHour": forecast_hour, "requestedDepthMeters": depth, "models": model_metadata}
     rasters = []
@@ -1269,7 +1307,7 @@ def _build_temperature_rasters(fields_key: tuple, forecast_hour: int, depth: int
             0.005, 0.995, TEMPERATURE_MIN_COLOR_SPAN_C,
         )
         if render:
-            rasters = _render_rasters(inputs, TEMPERATURE_COLOR_STOPS, minimum, maximum, resolution)
+            rasters = _render_rasters(inputs, TEMPERATURE_COLOR_STOPS, minimum, maximum, resolution, value_only=value_only)
         metadata["minC"], metadata["maxC"] = minimum, maximum
     return {"rasters": rasters, "metadata": metadata}
 
@@ -1337,14 +1375,16 @@ def _regular_thermocline_grid(model: str, forecast_hour: int, resolution: int) -
     return render_input, metadata
 
 
-def great_lakes_thermocline_rasters(forecast_hour: int, resolution: int, models: tuple[str, ...] = MODELS, scale: tuple[float, float] | None = None) -> dict:
+def great_lakes_thermocline_rasters(forecast_hour: int, resolution: int, models: tuple[str, ...] = MODELS, scale: tuple[float, float] | None = None, *, value_only: bool = False) -> dict:
     """Thermocline depth for every lake. ``scale`` fixes the palette's (min, max) metres instead of fitting this frame."""
-    cache_key = (THERMOCLINE_RASTER_RENDER_VERSION, _data_key(models, forecast_hour), resolution, models, scale, _cache_bucket())
-    payload = _shared_payload(_thermocline_raster_cache, cache_key, lambda: _build_thermocline_rasters(forecast_hour, resolution, models, scale), MAX_PAYLOAD_CACHE_ENTRIES)
-    return _thermocline_with_fallback(payload, forecast_hour, resolution, models, scale)
+    base_key = (THERMOCLINE_RASTER_RENDER_VERSION, _data_key(models, forecast_hour), resolution, models, scale)
+    cache_key = (*base_key, *((True,) if value_only else ()), _cache_bucket())
+    reused = _value_only_from_rendered(_thermocline_raster_cache, (*base_key, cache_key[-1])) if value_only else None
+    payload = reused or _shared_payload(_thermocline_raster_cache, cache_key, lambda: _build_thermocline_rasters(forecast_hour, resolution, models, scale, value_only=value_only), MAX_PAYLOAD_CACHE_ENTRIES)
+    return _thermocline_with_fallback(payload, forecast_hour, resolution, models, scale, value_only=value_only)
 
 
-def _build_thermocline_rasters(forecast_hour: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None = None, *, render: bool = True) -> dict:
+def _build_thermocline_rasters(forecast_hour: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None = None, *, render: bool = True, value_only: bool = False) -> dict:
     inputs, model_metadata = [], []
     with ThreadPoolExecutor(max_workers=len(models)) as executor:
         futures = {model: executor.submit(_regular_thermocline_grid, model, forecast_hour, resolution) for model in models}
@@ -1366,7 +1406,7 @@ def _build_thermocline_rasters(forecast_hour: int, resolution: int, models: tupl
         )
         minimum = max(0.0, minimum)
         if render:
-            rasters = _render_rasters(inputs, THERMOCLINE_COLOR_STOPS, minimum, maximum, resolution)
+            rasters = _render_rasters(inputs, THERMOCLINE_COLOR_STOPS, minimum, maximum, resolution, value_only=value_only)
         metadata["minDepthMeters"], metadata["maxDepthMeters"] = minimum, maximum
     return {"rasters": rasters, "metadata": metadata}
 
@@ -1400,31 +1440,8 @@ def _bathymetry_grid(model: str) -> dict | None:
         cached = _bathymetry_cache.get(model)
     if cached is not None:
         return cached
-    run = discovered_runs((model,))[model]
-    if not run.get("files"):
-        return None
-    path = run["files"][min(run["files"])]
-    ny, nx, _ = _regular_grid_dimensions(path)
-    if not ny or not nx:
-        return None
-    disk_path = gl_cache.path_for("static", model, f"bathymetry-{ny}x{nx}.bin")
-    record = gl_cache.read_record(disk_path)
-    if record and len(record[1].get("depth", ())) == ny * nx:
-        header, arrays = record
-        grid = {"latitudeAxis": header["latitudeAxis"], "longitudeAxis": header["longitudeAxis"], "columns": nx, "wet": arrays["wet"], "depth": arrays["depth"]}
-    else:
-        arrays = gl_cache.fetch_dods(f"{THREDDS}/dodsC/{path}", f"Latitude[0:1:{ny - 1}][0],Longitude[0][0:1:{nx - 1}],mask[0:1:{ny - 1}][0:1:{nx - 1}],h[0:1:{ny - 1}][0:1:{nx - 1}]")
-        latitude_axis = [float(value) for value in arrays["Latitude"][1]]
-        longitude_axis = [_great_lakes_longitude(float(value)) for value in arrays["Longitude"][1]]
-        wet = array("B", (1 if value > 0 else 0 for value in arrays["mask"][1]))
-        depth = array("f", (float(value) for value in arrays["h"][1]))
-        if len(latitude_axis) != ny or len(longitude_axis) != nx or len(wet) != ny * nx or len(depth) != ny * nx:
-            raise RuntimeError("NOAA model bathymetry was incomplete")
-        gl_cache.write_record(disk_path, {"latitudeAxis": latitude_axis, "longitudeAxis": longitude_axis}, {"wet": wet, "depth": depth})
-        grid = {"latitudeAxis": latitude_axis, "longitudeAxis": longitude_axis, "columns": nx, "wet": wet, "depth": depth}
-    with _cache_lock:
-        _bathymetry_cache[model] = grid
-    return grid
+    with gl_cache.resource_lock("bathymetry", model):
+        return _load_bathymetry_grid(model)
 
 
 def lake_name_for_model(model: str, longitude: float) -> str:
@@ -1434,18 +1451,44 @@ def lake_name_for_model(model: str, longitude: float) -> str:
     return MODEL_LAKE_NAMES.get(model, "")
 
 
-def model_bathymetry_depth(latitude: float, longitude: float, models: tuple[str, ...] = MODELS) -> dict | None:
+def model_bathymetry_depth(latitude: float, longitude: float, models: tuple[str, ...] = MODELS,
+                           *, timeout: float | None = None) -> dict | None:
     """Water depth anywhere a NOAA lake model has water (about 0.5–1 km cells)."""
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    unavailable = False
     for model in models:
         try:
-            grid = _bathymetry_grid(model)
+            if deadline is None:
+                grid = _bathymetry_grid(model)
+            else:
+                grid = _cached_bathymetry_grid(model)
+                if grid is None:
+                    # At most one download per model continues after a click's
+                    # deadline; subsequent clicks share it instead of piling up.
+                    with _cache_lock:
+                        future = _bathymetry_downloads.get(model)
+                        if future is not None and future.done():
+                            _bathymetry_downloads.pop(model)
+                            _bathymetry_retry_at[model] = time.monotonic() + 60
+                            future = None
+                        if future is None and time.monotonic() >= _bathymetry_retry_at.get(model, 0):
+                            future = _bathymetry_executor.submit(_bathymetry_grid, model)
+                            _bathymetry_downloads[model] = future
+                    if future is None:
+                        unavailable = True
+                        continue
+                    grid = future.result(timeout=max(0, deadline - time.monotonic()))
         except Exception:
+            unavailable = True
             continue  # One lake's unavailable grid must not hide another lake.
         if grid is None:
+            unavailable = True
             continue
         depth = _grid_value(grid["latitudeAxis"], grid["longitudeAxis"], grid["columns"], grid["wet"], grid["depth"], latitude, longitude)
         if depth is not None and math.isfinite(depth) and depth > 0:
             return {"depthMeters": depth, "model": model, "lake": lake_name_for_model(model, longitude)}
+    if deadline is not None and unavailable:
+        raise RuntimeError("NOAA model depth is still loading or unavailable")
     return None
 
 
@@ -1843,8 +1886,8 @@ def great_lakes_current_profile(forecast_hour: int, latitude: float, longitude: 
     return {"available": False}
 
 
-def _current_grid_field(model: str, forecast_hour: int, depth: int) -> dict:
-    run, hour, path, variables, volume, layer = _model_depth("velocity", model, forecast_hour, depth)
+def _current_grid_field(model: str, forecast_hour: int, depth: int, *, prefetch: bool = True) -> dict:
+    run, hour, path, variables, volume, layer = _model_depth("velocity", model, forecast_hour, depth, prefetch=prefetch)
     east, north = volume.level(variables["u"], layer), volume.level(variables["v"], layer)
     rows, cols = volume.rows, volume.columns
     valid = [bool(wet) and all(math.isfinite(value) and abs(value) <= 10 for value in (u, v)) for wet, u, v in zip(volume.wet, east, north)]
@@ -1994,3 +2037,57 @@ def temperature_range_metadata(forecast_hour: int, depth: float, resolution: int
     key = ("temperature", TEMPERATURE_RASTER_RENDER_VERSION, _data_key(models, forecast_hour), depth, resolution, models)
     return _cached_range_metadata(key, ("minC", "maxC"), lambda: _build_temperature_rasters(
         _temperature_fields_key(forecast_hour, depth, resolution, models), forecast_hour, depth, resolution, models, render=False)["metadata"])
+
+
+def _cached_bathymetry_grid(model: str) -> dict | None:
+    with _cache_lock:
+        cached = _bathymetry_cache.get(model)
+    if cached is not None:
+        return cached
+    # Static depth remains usable through a catalogue outage or a restart.
+    directory = gl_cache.path_for("static", model)
+    for path in sorted(directory.glob("bathymetry-*.bin"), key=lambda path: path.stat().st_mtime, reverse=True):
+        record = gl_cache.read_record(path)
+        if record is None:
+            continue
+        header, arrays = record
+        ys, xs = header.get("latitudeAxis", []), header.get("longitudeAxis", [])
+        wet, depth = arrays.get("wet", ()), arrays.get("depth", ())
+        if len(ys) < 2 or len(xs) < 2 or len(wet) != len(ys) * len(xs) or len(depth) != len(wet):
+            continue
+        grid = {"latitudeAxis": ys, "longitudeAxis": xs, "columns": len(xs), "wet": wet, "depth": depth}
+        with _cache_lock:
+            _bathymetry_cache[model] = grid
+        return grid
+    return None
+
+
+def _load_bathymetry_grid(model: str) -> dict | None:
+    cached = _cached_bathymetry_grid(model)
+    if cached is not None:
+        return cached
+    run = discovered_runs((model,))[model]
+    if not run.get("files"):
+        return None
+    path = run["files"][min(run["files"])]
+    ny, nx, _ = _regular_grid_dimensions(path)
+    if not ny or not nx:
+        return None
+    disk_path = gl_cache.path_for("static", model, f"bathymetry-{ny}x{nx}.bin")
+    record = gl_cache.read_record(disk_path)
+    if record and len(record[1].get("depth", ())) == ny * nx:
+        header, arrays = record
+        grid = {"latitudeAxis": header["latitudeAxis"], "longitudeAxis": header["longitudeAxis"], "columns": nx, "wet": arrays["wet"], "depth": arrays["depth"]}
+    else:
+        arrays = gl_cache.fetch_dods(f"{THREDDS}/dodsC/{path}", f"Latitude[0:1:{ny - 1}][0],Longitude[0][0:1:{nx - 1}],mask[0:1:{ny - 1}][0:1:{nx - 1}],h[0:1:{ny - 1}][0:1:{nx - 1}]")
+        latitude_axis = [float(value) for value in arrays["Latitude"][1]]
+        longitude_axis = [_great_lakes_longitude(float(value)) for value in arrays["Longitude"][1]]
+        wet = array("B", (1 if value > 0 else 0 for value in arrays["mask"][1]))
+        depth = array("f", (float(value) for value in arrays["h"][1]))
+        if len(latitude_axis) != ny or len(longitude_axis) != nx or len(wet) != ny * nx or len(depth) != ny * nx:
+            raise RuntimeError("NOAA model bathymetry was incomplete")
+        gl_cache.write_record(disk_path, {"latitudeAxis": latitude_axis, "longitudeAxis": longitude_axis}, {"wet": wet, "depth": depth})
+        grid = {"latitudeAxis": latitude_axis, "longitudeAxis": longitude_axis, "columns": nx, "wet": wet, "depth": depth}
+    with _cache_lock:
+        _bathymetry_cache[model] = grid
+    return grid

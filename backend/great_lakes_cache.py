@@ -8,6 +8,7 @@ reader never sees a partial file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -17,12 +18,16 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from array import array
 from pathlib import Path
+from contextlib import contextmanager
 
 USER_AGENT = "Fishing-Logbook-GreatLakes/1.0"
+HTTP_502_MAX_RETRIES = 80
+HTTP_502_RETRY_WINDOW_SECONDS = 60 * 60
 DEFAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "fishing-logbook-great-lakes"
 
 _cache_dir = DEFAULT_CACHE_DIR
@@ -164,8 +169,21 @@ def prune(directory: Path, keep: set[str]) -> None:
 
 def http_get(url: str, timeout: float = 60) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
+    noaa = (urllib.parse.urlsplit(url).hostname or "").lower().endswith(".noaa.gov")
+    retry_deadline = time.monotonic() + HTTP_502_RETRY_WINDOW_SECONDS
+    retries = 0
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            remaining = retry_deadline - time.monotonic()
+            if noaa and error.code == 502 and retries < HTTP_502_MAX_RETRIES and remaining > 0:
+                error.close()
+                retries += 1
+                time.sleep(remaining / (HTTP_502_MAX_RETRIES - retries + 1))
+                continue
+            raise
 
 
 def parse_dods(payload: bytes) -> dict[str, tuple[list[int], array]]:
@@ -254,3 +272,31 @@ class LeaderLock:
         finally:
             self._handle.close()
             self._handle = None
+
+
+@contextmanager
+def resource_lock(namespace: str, key: object, timeout: float = 180.0):
+    """Share 256 stable lock files per workload, avoiding one file per forecast.
+
+    Hash collisions only serialize unrelated misses. Locks stay outside the
+    pruned data directories and are never unlinked while another worker holds them.
+    """
+    slot = hashlib.sha1(repr(key).encode()).digest()[0]
+    target = path_for("locks", namespace, f"{slot:02x}.lock")
+    lock = LeaderLock(target)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                acquired = lock.acquire()
+            except OSError:
+                # As with metadata lookups, a read-only cache may still serve data.
+                break
+            if acquired:
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for cached {target.name}")
+            time.sleep(0.05)
+        yield
+    finally:
+        lock.release()

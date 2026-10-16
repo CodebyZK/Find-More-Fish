@@ -179,7 +179,7 @@ def test_partial_ranges_are_retried_instead_of_saved(monkeypatch):
     assert builds == [1, 1]
 
 
-@pytest.mark.parametrize("layer,expected", [("waves", (0.0, 6.0)), ("upwelling", (-8.0, 8.0))])
+@pytest.mark.parametrize("layer,expected", [("waves", (0.0, 4.0)), ("upwelling", (-8.0, 8.0))])
 def test_fixed_ranges_skip_frame_scanning(monkeypatch, layer, expected):
     monkeypatch.setattr(animation, "layer_payload", lambda *args: pytest.fail("Fixed range scanned a frame"))
     steps = []

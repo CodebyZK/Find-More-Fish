@@ -66,14 +66,11 @@ def test_cloud_archive_export_creates_missing_data_directory() -> None:
         payload = v2({"trips": [{"id": "cloud-trip", "title": "Cloud Trip", "catches": [], "lostFish": []}]})
 
         with (
-            patch("server.DATA_DIR", root),
-            patch("server.DATABASE_FILE", root / "logbook.sqlite3"),
-            patch("server.cloud_storage.enabled", return_value=True),
-            patch("server.cloud_storage.get_logbook", return_value=(payload, "cloud-revision")),
-            patch("server.cloud_storage.list_media", return_value=[]),
+            patch("backend.cloud_storage.get_logbook", return_value=(payload, "cloud-revision")),
+            patch("backend.cloud_storage.list_media", return_value=[]),
         ):
-            client = create_app({"TESTING": True, "SECRET_KEY": "cloud-archive-test"}).test_client()
-            exported = client.get("/api/archive")
+            fish = make_app(root, storage_backend="cloud", cloud_api_url="https://cloud.invalid")
+            exported = fish.client.get("/api/archive")
 
             assert exported.status_code == 200
             with zipfile.ZipFile(io.BytesIO(exported.data)) as bundle:

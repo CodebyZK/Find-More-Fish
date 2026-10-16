@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
+import logging
 import json
 import math
 import ssl
@@ -11,6 +13,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from array import array
 from pathlib import Path
+
+from . import great_lakes_cache as gl_cache
 
 from .backend_config import GREAT_LAKES_BATHYMETRY_URL
 
@@ -31,6 +35,11 @@ OFFSHORE_FOW_FEET = 80
 BATHYMETRY_EXTRA_CIPHERS = "AES256-GCM-SHA384:AES128-GCM-SHA256"
 LOCAL_CONTOUR_LAKES = ("erie", "huron", "michigan", "ontario", "superior")
 LOCAL_CONTOUR_DIR = Path(__file__).resolve().parents[1] / "static" / "data"
+LOCAL_CONTOUR_INDEX_DIR = LOCAL_CONTOUR_DIR / "depth-indexes"
+LOCAL_CONTOUR_INDEX_VERSION = 1
+REMOTE_CONTOUR_TIMEOUT_SECONDS = 2
+MODEL_DEPTH_TIMEOUT_SECONDS = 3
+logger = logging.getLogger(__name__)
 LOCAL_CONTOUR_BUCKET_DEGREES = 0.01
 LOCAL_CONTOUR_INDEX_STEP_METERS = 200.0
 _LOCAL_INDEX_CHUNK_CHARS = 64 * 1024
@@ -118,21 +127,38 @@ def _candidate_contour_lakes(latitude: float, longitude: float) -> tuple[str, ..
     return candidates if _LOCAL_LAKE_BOUNDS else LOCAL_CONTOUR_LAKES
 
 
-def _local_contour_index(lake: str):
+def _local_contour_index(lake: str, *, output_directory: Path | None = None) -> tuple[array, dict[tuple[int, int], array]] | None:
     with _LOCAL_CONTOUR_CACHE_LOCK:
         cached = _LOCAL_CONTOUR_CACHE.get(lake)
     if cached is not None:
         return cached
+
     with _LOCAL_CONTOUR_LOAD_LOCKS[lake]:
         with _LOCAL_CONTOUR_CACHE_LOCK:
             cached = _LOCAL_CONTOUR_CACHE.get(lake)
         if cached is not None:
             return cached
+
         path = LOCAL_CONTOUR_DIR / f"lake-{lake}-contours.geojson.gz"
         if not path.is_file():
             return None
         try:
-            built = _build_local_contour_index(path)
+            # Content identity invalidates both build-time and shared indexes
+            # when NOAA contour data changes, independently of file timestamps.
+            with path.open("rb") as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            filename = f"{lake}-v{LOCAL_CONTOUR_INDEX_VERSION}-{digest}.bin"
+            target = (output_directory or gl_cache.path_for("contour-indexes")) / filename
+            built = _read_local_contour_index((output_directory or LOCAL_CONTOUR_INDEX_DIR) / filename)
+            if built is None:
+                with gl_cache.resource_lock("contour-indexes", filename):
+                    built = _read_local_contour_index(target)
+                    if built is None:
+                        built = _build_local_contour_index(path)
+                        try:
+                            _write_local_contour_index(target, built)
+                        except OSError:
+                            logger.warning("Could not persist %s contour index; keeping the prepared index in memory.", lake)
         except (OSError, ValueError, TypeError, KeyError, IndexError, EOFError):
             return None
         with _LOCAL_CONTOUR_CACHE_LOCK:
@@ -230,7 +256,7 @@ def _iter_contour_features(path: Path):
 
 
 def lookup_depth(latitude: float, longitude: float, lake_calibrations_feet: object = None) -> dict | None:
-    """Depth from local NOAA contours, Esri fallback, then the NOAA lake-model estimate."""
+    """Depth from local NOAA contours, the NOAA model, then remote contours."""
     local = nearest_local_contour(latitude, longitude)
     if local is not None:
         depth_m, lake = local
@@ -245,28 +271,32 @@ def lookup_depth(latitude: float, longitude: float, lake_calibrations_feet: obje
             "depth_source": LOCAL_DEPTH_SOURCE,
         }
     try:
-        features = query_bathymetry_features(latitude, longitude)
-        nearest = nearest_bathymetry_feature(latitude, longitude, features)
-        contour_error = None
-    except RuntimeError as error:
-        nearest, contour_error = None, error
-    if nearest is None:
         estimate = model_depth_estimate(latitude, longitude)
-        if estimate is None:
-            if contour_error is not None:
-                raise contour_error
-            return None
+        model_error = None
+    except Exception as error:
+        estimate, model_error = None, error
+    if estimate is not None:
         depth_m = estimate["depthMeters"]
         depth_ft = depth_m * FEET_PER_METER
         depth_m, depth_ft = corrected_bathymetry_depths(
             depth_ft, depth_m, lake_depth_offset_feet(estimate["lake"], depth_ft, depth_m, lake_calibrations_feet),
         )
         return {
-            "depth_m": rounded_depth(depth_m),
-            "depth_ft": rounded_depth(depth_ft),
-            "lake_name": estimate["lake"],
-            "depth_source": MODEL_DEPTH_SOURCE,
+            "depth_m": rounded_depth(depth_m), "depth_ft": rounded_depth(depth_ft),
+            "lake_name": estimate["lake"], "depth_source": MODEL_DEPTH_SOURCE,
         }
+    try:
+        features = query_bathymetry_features(latitude, longitude)
+        nearest = nearest_bathymetry_feature(latitude, longitude, features)
+        contour_error = None
+    except RuntimeError as error:
+        nearest, contour_error = None, error
+    if nearest is None:
+        if contour_error is not None:
+            raise contour_error
+        if model_error is not None:
+            raise model_error
+        return None
     attributes = nearest.get("attributes", {})
     depth_m, depth_ft = corrected_bathymetry_depths(
         attributes.get("depth_ft"),
@@ -287,12 +317,10 @@ def lookup_depth(latitude: float, longitude: float, lake_calibrations_feet: obje
 
 
 def model_depth_estimate(latitude: float, longitude: float) -> dict | None:
-    from .great_lakes_service import model_bathymetry_depth
+    from .great_lakes_service import GREAT_LAKES_MODELS, model_bathymetry_depth
 
-    try:
-        return model_bathymetry_depth(latitude, longitude)
-    except Exception:
-        return None
+    models = tuple(dict.fromkeys(GREAT_LAKES_MODELS[lake] for lake in _candidate_contour_lakes(latitude, longitude)))
+    return model_bathymetry_depth(latitude, longitude, models, timeout=MODEL_DEPTH_TIMEOUT_SECONDS)
 
 
 def finite_float(value: object) -> float | None:
@@ -369,7 +397,7 @@ def query_bathymetry_features(latitude: float, longitude: float) -> list[dict]:
 def read_json_url(url: str) -> dict:
     request_headers = {"User-Agent": "FishingLogbook/1.0 (+https://edumaps.esri.ca/)"}
     try:
-        with urlopen(Request(url, headers=request_headers), timeout=10, context=_SSL_CONTEXT) as response:
+        with urlopen(Request(url, headers=request_headers), timeout=REMOTE_CONTOUR_TIMEOUT_SECONDS, context=_SSL_CONTEXT) as response:
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as error:
         raise RuntimeError(f"Bathymetry service returned HTTP {error.code}") from error
@@ -378,11 +406,11 @@ def read_json_url(url: str) -> dict:
     except (URLError, TimeoutError, OSError):
         try:
             response = subprocess.run(
-                ["curl", "-fsSL", "--max-time", "10", url],
+                ["curl", "-fsSL", "--max-time", str(REMOTE_CONTOUR_TIMEOUT_SECONDS), url],
                 capture_output=True,
                 check=True,
                 text=True,
-                timeout=12,
+                timeout=REMOTE_CONTOUR_TIMEOUT_SECONDS,
             )
             return json.loads(response.stdout)
         except (FileNotFoundError, subprocess.SubprocessError, json.JSONDecodeError) as error:
@@ -463,3 +491,41 @@ def depth_null_payload() -> dict:
         "lake_name": None,
         "depth_source": None,
     }
+
+
+def prepare_local_contour_indexes(output_directory: Path | None = None) -> None:
+    """Prepare before serving requests; Docker also does this during its build."""
+    for lake in LOCAL_CONTOUR_LAKES:
+        _local_contour_index(lake, output_directory=output_directory)
+
+
+def _read_local_contour_index(path: Path) -> tuple[array, dict[tuple[int, int], array]] | None:
+    record = gl_cache.read_record(path)
+    if record is None:
+        return None
+    try:
+        header, arrays = record
+        segments, keys, offsets, ids = (arrays[name] for name in ("segments", "keys", "offsets", "ids"))
+        if (header.get("version") != LOCAL_CONTOUR_INDEX_VERSION or segments.typecode != "f"
+                or keys.typecode != "i" or offsets.typecode != "I" or ids.typecode != "I"
+                or len(segments) % 5 or len(keys) % 2 or len(offsets) != len(keys) // 2 + 1
+                or offsets[0] != 0 or offsets[-1] != len(ids)
+                or any(a > b for a, b in zip(offsets, offsets[1:]))
+                or (ids and max(ids) >= len(segments) // 5)):
+            return None
+        buckets = {(keys[index * 2], keys[index * 2 + 1]): ids[offsets[index]:offsets[index + 1]]
+                   for index in range(len(keys) // 2)}
+        return segments, buckets
+    except (KeyError, TypeError, IndexError):
+        return None
+
+
+def _write_local_contour_index(path: Path, index: tuple[array, dict[tuple[int, int], array]]) -> None:
+    segments, buckets = index
+    keys, offsets, ids = array("i"), array("I", [0]), array("I")
+    for key, values in buckets.items():
+        keys.extend(key)
+        ids.extend(values)
+        offsets.append(len(ids))
+    gl_cache.write_record(path, {"version": LOCAL_CONTOUR_INDEX_VERSION},
+                          {"segments": segments, "keys": keys, "offsets": offsets, "ids": ids})

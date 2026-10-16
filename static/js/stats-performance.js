@@ -1,5 +1,5 @@
 import { state, ui } from "./app-state.js";
-import { convertUnitValue, unitPreference, unitSymbol } from "./app-units.js";
+import { convertUnitValue, explicitMeasurementUnit, formatUnitValue, unitPreference, unitSymbol } from "./app-units.js";
 import { moonWindowForTime, windDirectionLabel } from "./location-weather.js";
 import { fishCount, number, tripHours } from "./dashboard.js";
 import { lureName } from "./gear-core.js";
@@ -531,15 +531,15 @@ export function summarizeSpeedDelta(records) {
     ["Ball faster", { fish: 0, trips: new Set(), deltas: [] }]
   ]);
   records.forEach((record) => {
-    const gps = saneStatsNumber(record.gpsSpeed, { min: 0.1, max: 15 });
-    const ball = saneStatsNumber(record.ballSpeed, { min: 0.1, max: 15 });
+    const gps = fishingSpeedMph(record.gpsSpeed);
+    const ball = fishingSpeedMph(record.ballSpeed);
     if (gps === null || ball === null) return;
     const delta = ball - gps;
     const label = delta < -0.2 ? "Ball slower" : delta > 0.2 ? "Ball faster" : "Matched";
     const group = groups.get(label);
     group.fish += fishCount(record);
     group.trips.add(record.trip.id);
-    group.deltas.push(delta);
+    group.deltas.push(convertUnitValue(delta, "mph", unitPreference("speed")));
   });
   return [...groups.entries()].filter(([, item]) => item.deltas.length).map(([label, item]) => [
     label,
@@ -550,11 +550,27 @@ export function summarizeSpeedDelta(records) {
   ]);
 }
 
+function fishingSpeedMph(value) {
+  const match = String(value ?? "").trim().match(/^(-?(?:\d+(?:\.\d+)?|\.\d+))(?:\s*([a-zA-Z]+))?$/);
+  if (!match) return null;
+  const unit = match[2] ? explicitMeasurementUnit(match[2]) : unitPreference("speed");
+  if (!["mph", "kph", "kn"].includes(unit)) return null;
+  const speed = convertUnitValue(match[1], unit, "mph");
+  return Number.isFinite(speed) && speed >= 0.1 && speed <= 15 ? speed : null;
+}
+
+export function summarizeFishingSpeed(records, field) {
+  return summarizeCatchMeasurement(records, (record) => {
+    const speed = fishingSpeedMph(record[field]);
+    return speed === null ? "" : convertUnitValue(speed, "mph", unitPreference("speed"));
+  }, { step: 0.5, suffix: ` ${unitSymbol("speed")}` });
+}
+
 export function summarizeBestSpeedByDirection(records) {
   const directions = new Map();
   records.forEach((record) => {
     const direction = String(record.direction || "").trim();
-    const speed = saneStatsNumber(record.gpsSpeed, { min: 0.1, max: 15 });
+    const speed = fishingSpeedMph(record.gpsSpeed);
     if (!direction || speed === null) return;
     const roundedSpeed = Math.round(speed * 10) / 10;
     const speeds = directions.get(direction) || new Map();
@@ -567,17 +583,18 @@ export function summarizeBestSpeedByDirection(records) {
   return [...directions.entries()]
     .map(([direction, speeds]) => {
       const best = [...speeds.values()].sort((a, b) => b.fish - a.fish || b.trips.size - a.trips.size || a.speed - b.speed)[0];
-      return [direction, `${trimNumber(best.speed)} mph`, best.fish, best.trips.size];
+      return [direction, formatUnitValue(best.speed, "speed", "mph", { decimals: 1 }), best.fish, best.trips.size];
     })
     .sort((a, b) => b[2] - a[2] || String(a[0]).localeCompare(String(b[0])));
 }
 
 export function summarizeShakers(records) {
-  const shakers = records.filter((record) => Boolean(record.shaker));
-  const standard = records.length - shakers.length;
+  const fish = records.reduce((sum, record) => sum + fishCount(record), 0);
+  const shakers = records.filter((record) => Boolean(record.shaker)).reduce((sum, record) => sum + fishCount(record), 0);
+  const standard = fish - shakers;
   return [
-    ["Shaker", shakers.length, formatPercent(shakers.length, records.length)],
-    ["Standard size", standard, formatPercent(standard, records.length)]
+    ["Shaker", shakers, formatPercent(shakers, fish)],
+    ["Standard size", standard, formatPercent(standard, fish)]
   ];
 }
 

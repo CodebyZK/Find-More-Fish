@@ -109,6 +109,15 @@ The Worker accesses both resources through bindings. No D1 or R2 storage key is
 stored in GitLab, the Worker source, or a browser. GitLab only stores the scoped
 Cloudflare deployment token, account ID, and D1 database ID.
 
+`GET /api/media` returns up to 500 inventory entries per page, ordered by
+upload time and object key, with an opaque `nextCursor` (or `null` on the last
+page). Send that cursor as `cursor` and retain the category filter to continue.
+The desktop cloud client follows every page for archives, galleries, queue
+items, lookups, and orphan scans. An older Worker returning a full 500-item page
+without pagination is refused rather than producing an incomplete backup.
+Deploy the pagination-capable Worker before exporting a larger cloud library;
+ordinary local development does not deploy it or change production storage.
+
 The website pipeline's Cloudflare Worker deployment job should render the D1
 UUID into an ignored Wrangler configuration, apply pending migrations, and
 deploy `fish-logger-api`. It should run only on the protected website branch

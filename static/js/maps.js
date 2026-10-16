@@ -8,7 +8,7 @@ import { els } from "./app-elements.js";
 import { isUsableCoordinates, isVideoMedia, mediaMarkup, previewImage } from "./app-media.js";
 import { coordinateText } from "./locations.js";
 import { fishingSpotRadiusText } from "./settings-locations.js";
-import { ensureGreatLakesConditions } from "./great-lakes-conditions.js";
+import { ensureGreatLakesConditions, GREAT_LAKES_MODEL_BOUNDS } from "./great-lakes-conditions.js";
 import { pauseGreatLakesAnimation } from "./great-lakes-animation.js";
 import { positionLabel } from "./cards.js";
 import { addMeasureControl, isMeasuring } from "./measure.js";
@@ -386,21 +386,27 @@ export async function showDepthPopupForMapClick(map, event) {
     latitude: coordinates.latitude.toFixed(6),
     longitude: coordinates.longitude.toFixed(6)
   });
-  const [depthResult, currentResult] = await Promise.allSettled([
+  let depth = null, status = "loading", reading = "";
+  const render = () => {
+    if (map.hasLayer(popup)) popup.setContent(String(mapDepthPopupHtml(coordinates, depth, status, reading)));
+  };
+  await Promise.allSettled([
     fetch(`/api/bathymetry/depth?${params}`).then((response) => {
       if (!response.ok) throw new Error("Depth lookup unavailable");
       return response.json();
+    }).then((value) => {
+      depth = value;
+      status = "ready";
+      render();
+    }, () => {
+      status = "error";
+      render();
     }),
-    window.getGreatLakesMapInspection?.(coordinates) || Promise.resolve("")
+    Promise.resolve().then(() => window.getGreatLakesMapInspection?.(coordinates) || "").then((value) => {
+      reading = value;
+      render();
+    })
   ]);
-  if (!map.hasLayer(popup)) return;
-  if (depthResult.status === "rejected") console.error("Could not fetch map depth.", depthResult.reason);
-  popup.setContent(String(mapDepthPopupHtml(
-    coordinates,
-    depthResult.status === "fulfilled" ? depthResult.value : null,
-    depthResult.status === "fulfilled" ? "ready" : "error",
-    currentResult.status === "fulfilled" ? currentResult.value : ""
-  )));
 }
 
 export function bindDepthLookupPopup(map) {
@@ -721,6 +727,23 @@ const MAP_DEPTH_CONTOUR_LAKES = Object.freeze({
   superior: [[46.0, -92.2008333333333], [49.5008333331933, -84.000000000328]]
 });
 
+function mapCenterDepthContourLake(center) {
+  const inModelBounds = (model) => {
+    const [[south, west], [north, east]] = GREAT_LAKES_MODEL_BOUNDS[model];
+    return center.lat >= south && center.lat <= north && center.lng >= west && center.lng <= east;
+  };
+  // NOAA's LOOFS rectangle reaches west into Georgian Bay. Resolve its
+  // overlap with LMHOFS as Huron before falling back to Ontario.
+  if (center.lat >= 46.5 && inModelBounds("LSOFS")) return "superior";
+  if (center.lat < 43 && inModelBounds("LEOFS")) return "erie";
+  if (inModelBounds("LMHOFS")) return center.lng < -84.75 ? "michigan" : "huron";
+  if (center.lat >= 43 && inModelBounds("LOOFS")) return "ontario";
+  return Object.entries(MAP_DEPTH_CONTOUR_LAKES).find(([, bounds]) =>
+    center.lat >= bounds[0][0] && center.lat <= bounds[1][0]
+      && center.lng >= bounds[0][1] && center.lng <= bounds[1][1]
+  )?.[0] || null;
+}
+
 function savedMapDepthContours() {
   try { return localStorage.getItem(MAP_DEPTH_CONTOURS_STORAGE_KEY) === "true"; }
   catch { return false; }
@@ -740,24 +763,27 @@ function setupMapPageDepthContours(map) {
   const requests = new Map();
   const layerCache = new Map();
   let requestSequence = 0;
+  let activeViewKey = "";
 
   const setStatus = (message, isError = false) => {
     if (!status) return;
     status.textContent = message;
     status.classList.toggle("is-error", isError);
   };
-  const loadLayer = (lake) => {
-    if (layerCache.has(lake)) return Promise.resolve(layerCache.get(lake));
-    if (!requests.has(lake)) {
-      const request = fetch("/api/bathymetry/contours/" + lake)
+  const loadLayer = (lake, detail) => {
+    const key = `${lake}:${detail}`;
+    if (layerCache.has(key)) return Promise.resolve(layerCache.get(key));
+    if (!requests.has(key)) {
+      const request = fetch("/api/bathymetry/contours/" + lake + "?detail=" + detail)
         .then((response) => {
           if (!response.ok) throw new Error("NOAA depth contours unavailable");
           return response.json();
         })
         .then((data) => {
-          const layer = L.geoJSON(data, {
+          const renderer = L.canvas({ pane: "depthContoursPane", padding: 0.15 });
+          const paths = L.geoJSON(data, {
             pane: "depthContoursPane",
-            renderer: L.canvas({ padding: 0.5 }),
+            renderer,
             style: (feature) => {
               const major = Number(feature?.properties?.DEPTH) % 10 === 0;
               return { color: major ? "#a0dcff" : "#5798b5", weight: major ? 1.2 : 0.65, opacity: major ? 0.92 : 0.58 };
@@ -765,13 +791,14 @@ function setupMapPageDepthContours(map) {
             smoothFactor: 1.2,
             interactive: false
           });
-          layerCache.set(lake, layer);
+          const layer = L.layerGroup([paths, renderer]);
+          layerCache.set(key, layer);
           return layer;
         })
-        .finally(() => requests.delete(lake));
-      requests.set(lake, request);
+        .finally(() => requests.delete(key));
+      requests.set(key, request);
     }
-    return requests.get(lake);
+    return requests.get(key);
   };
 
   if (!map.getPane("depthContoursPane")) {
@@ -783,26 +810,33 @@ function setupMapPageDepthContours(map) {
     const visible = savedMapDepthContours();
     if (control) control.checked = visible;
     const sequence = ++requestSequence;
-    group.clearLayers();
-    if (map.hasLayer(group)) map.removeLayer(group);
-    if (!visible) { setStatus(""); return; }
+    const clear = () => {
+      activeViewKey = "";
+      group.clearLayers();
+      if (map.hasLayer(group)) map.removeLayer(group);
+    };
+    if (!visible) { clear(); setStatus(""); return; }
 
     const viewport = map.getBounds();
     const center = map.getCenter();
     const intersects = (bounds) => viewport.intersects(L.latLngBounds(bounds[0], bounds[1]));
-    const focused = Object.entries(MAP_DEPTH_CONTOUR_LAKES).find(([, bounds]) =>
-      center.lat >= bounds[0][0] && center.lat <= bounds[1][0] && center.lng >= bounds[0][1] && center.lng <= bounds[1][1]
-    );
+    const focused = mapCenterDepthContourLake(center);
     const lakes = map.getZoom() <= 6
       ? Object.entries(MAP_DEPTH_CONTOUR_LAKES).filter(([, bounds]) => intersects(bounds)).map(([lake]) => lake)
-      : (focused ? [focused[0]] : []);
+      : (focused ? [focused] : []);
     if (!lakes.length) {
+      clear();
       setStatus("Move the map over a Great Lake to load depth contours.");
       return;
     }
 
+    const zoom = map.getZoom();
+    const detail = zoom <= 6 ? "6" : zoom <= 9 ? "9" : zoom <= 12 ? "12" : "full";
+    const viewKey = [...lakes].sort().join(",") + ":" + detail;
+    if (activeViewKey === viewKey && map.hasLayer(group)) return;
+    clear();
     setStatus("Loading NOAA depth contours…");
-    const results = await Promise.allSettled(lakes.map(loadLayer));
+    const results = await Promise.allSettled(lakes.map(lake => loadLayer(lake, detail)));
     if (sequence !== requestSequence || !savedMapDepthContours()) return;
     const layers = results.filter(result => result.status === "fulfilled").map(result => result.value);
     layers.forEach(layer => group.addLayer(layer));
@@ -810,7 +844,7 @@ function setupMapPageDepthContours(map) {
     const failed = results.length - layers.length;
     if (failed && layers.length) setStatus("Some lake contours could not be loaded; the other visible contours are shown.", true);
     else if (failed) setStatus("NOAA depth contours could not be loaded.", true);
-    else setStatus("");
+    else { activeViewKey = viewKey; setStatus(""); }
   };
 
   control?.addEventListener("change", () => {

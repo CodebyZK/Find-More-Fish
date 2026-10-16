@@ -51,3 +51,17 @@
 
 .gl-card-link { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 11px 16px 13px; border-top: 1px solid var(--line); color: #8fc3f0; font-size: 13px; font-weight: 700; text-decoration: none; }
 .gl-card-link:hover { color: #b9dbf8; }
+
+.gl-target-controls[hidden], .gl-wind-controls label[hidden] { display: none; }
+.gl-target-controls { margin-top: 8px; }
+.gl-target-controls input[type="number"] { width: 100%; box-sizing: border-box; margin-top: 3px; padding: 8px 10px; font: inherit; }
+.gl-target-controls small, .gl-wind-controls small { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 6px 0; }
+.gl-target-temperature-range { font-variant-numeric: tabular-nums; }
+.gl-target-legend { display: flex; align-items: center; gap: 6px; margin: 9px 0; }
+.gl-target-legend i { flex: 1; height: 9px; border-radius: 5px; background: linear-gradient(90deg, #3a28a8, #245ce2 13%, #0e98f2 27%, #0cccde 40%, #22d088 53%, #96de30 66%, #fcda24 78%, #fc8c1c 89%, #e42834); }
+.gl-wind-status { display: block; margin: 3px 0 7px; }
+.great-lakes-wind-options { display: none; margin: 0 0 8px; }
+#greatLakesConditions.has-wind-layer .great-lakes-wind-options { display: block; }
+#greatLakesConditions.has-forecast-only-layer :is(.great-lakes-timeline, .great-lakes-depth-control) { display: none; }
+#greatLakesConditions.has-wind-layer .great-lakes-timeline { display: flex; }
+#greatLakesConditions.has-forecast-only-layer .great-lakes-color-mode { display: none; }

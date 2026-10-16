@@ -1,8 +1,11 @@
 const { expect, test } = require("@playwright/test");
-const { freshLogbook, resetLogbook, seededLocation } = require("./helpers");
+const { fillDate, freshLogbook, resetLogbook, seededLocation, stubExternalApis } = require("./helpers");
 
 test("Great Lakes trolling and jigging trips show saved thermocline and catch current", async ({ page }) => {
-  await resetLogbook(page, await freshLogbook(page, { locations: [seededLocation()] }));
+  const document = await freshLogbook(page, { locations: [seededLocation()] });
+  document.settings.units.speed = "mph";
+  await resetLogbook(page, document);
+  await stubExternalApis(page);
   const conditionRequests = [];
   await page.route("**/api/great-lakes/history/point/fishing-conditions**", async (route) => {
     conditionRequests.push(new URL(route.request().url()));
@@ -28,6 +31,7 @@ test("Great Lakes trolling and jigging trips show saved thermocline and catch cu
 
   await page.goto("/trips", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "New Trip", exact: true }).click();
+  await fillDate(page, "#tripDate", "10/05/2026");
   await page.locator("#tripLocation").selectOption("loc-lake-erie");
   await page.locator("#targetSpecies").selectOption({ label: "Walleye" });
   await page.locator("#method").selectOption({ label: "Trolling" });

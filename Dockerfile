@@ -32,6 +32,9 @@ COPY templates ./templates
 COPY backend ./backend
 COPY schema ./schema
 COPY static/img ./static/img
+COPY static/data ./static/data
+COPY scripts/prepare-depth-indexes.py ./scripts/
+RUN python scripts/prepare-depth-indexes.py
 COPY --from=frontend /build/static/dist ./static/dist
 RUN mkdir -p data/uploads
 

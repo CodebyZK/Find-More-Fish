@@ -13,6 +13,7 @@ from backend import great_lakes_cache as cache
 from backend import great_lakes_refresher as refresher
 from backend import great_lakes_service as service
 from backend import great_lakes_upwelling as upwelling
+from backend import great_lakes_target_temperature as target_temperature
 from backend import great_lakes_volumes as volumes
 from conftest import make_app
 
@@ -185,7 +186,7 @@ def test_status_route_reports_served_hour_and_next_run(monkeypatch, tmp_path) ->
     assert status["models"]["LEOFS"]["nowForecastHour"] == 6
     assert status["models"]["LEOFS"]["nowValidTime"] == "2026-10-02T18:00:00Z"
     assert status["models"]["LEOFS"]["nextRunExpectedAt"] == "2026-10-02T20:35:00Z"
-    assert status["version"] == f"LEOFS:20261002t12z:6|draw:{service.TEMPERATURE_RASTER_RENDER_VERSION}.{service.THERMOCLINE_RASTER_RENDER_VERSION}.{service.CURRENT_RENDER_VERSION}.{upwelling.UPWELLING_RENDER_VERSION}"
+    assert status["version"] == f"LEOFS:20261002t12z:6|draw:{service.TEMPERATURE_RASTER_RENDER_VERSION}.{service.THERMOCLINE_RASTER_RENDER_VERSION}.{service.CURRENT_RENDER_VERSION}.{upwelling.UPWELLING_RENDER_VERSION}.{target_temperature.TARGET_TEMPERATURE_RENDER_VERSION}"
 
     response = make_app(tmp_path).client.get("/api/great-lakes/status?models=LEOFS")
     assert response.status_code == 200
@@ -318,7 +319,7 @@ def test_requested_depths_snap_to_the_levels_noaa_stores(monkeypatch) -> None:
 
 def test_predraw_draws_exactly_what_the_map_requests(monkeypatch) -> None:
     calls = []
-    monkeypatch.setattr(service, "depth_levels", lambda models=service.MODELS: [0.0, 2.0, 10.0, 30.0, 60.0])
+    monkeypatch.setattr(service, "depth_levels", lambda models=service.MODELS: [0.0, 2.0, 10.0, 30.0, 60.0, 300.0, 320.0, 350.0])
     monkeypatch.setattr(service, "great_lakes_temperature_rasters", lambda hour, depth, resolution, models, scale=None: calls.append(("temperature", hour, depth, resolution, models)) or {})
     monkeypatch.setattr(service, "great_lakes_payload", lambda kind, hour, depth, models, scale=None: calls.append((kind, hour, depth, None, models)) or {})
     monkeypatch.setattr(service, "great_lakes_thermocline_rasters", lambda hour, resolution, models, scale=None: calls.append(("thermocline", hour, None, resolution, models)) or {})
@@ -326,10 +327,10 @@ def test_predraw_draws_exactly_what_the_map_requests(monkeypatch) -> None:
     worker = refresher.GreatLakesRefresher()
 
     worker.predraw(0)
-    # Every lake together at full detail, at each level down to ~100 ft for "Now".
+    # Every lake at each model depth through the 1,040 ft map limit for "Now".
     assert {call[4] for call in calls} == {service.MODELS}
     assert {call[3] for call in calls if call[3] is not None} == {refresher.MAP_RESOLUTION}
-    assert sorted({call[2] for call in calls if call[0] == "temperature"}) == [0.0, 2.0, 10.0, 30.0]
+    assert sorted({call[2] for call in calls if call[0] == "temperature"}) == [0.0, 2.0, 10.0, 30.0, 60.0, 300.0, 320.0]
     assert sum(1 for call in calls if call[0] == "thermocline") == 1
 
     calls.clear()

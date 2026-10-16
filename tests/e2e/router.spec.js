@@ -1,5 +1,5 @@
 const { expect, test } = require("@playwright/test");
-const { failOnHtmlEscapedMarkup, freshLogbook, resetLogbook, seededLocation, stubExternalApis } = require("./helpers");
+const { failOnHtmlEscapedMarkup, fillDate, freshLogbook, resetLogbook, seededLocation, stubExternalApis } = require("./helpers");
 
 async function routerSeed(page) {
   const document = await freshLogbook(page, {
@@ -111,6 +111,8 @@ test.describe("pushState router", () => {
     await expect(page.locator("#tripTable")).not.toContainText("&amp;");
 
     await page.getByRole("button", { name: "New Trip", exact: true }).click();
+    await fillDate(page, "#tripDate", "10/05/2026");
+    await page.locator("#tripLocation").selectOption("loc-lake-erie");
     await page.locator("#method").selectOption({ label: "Trolling" });
     await page.getByRole("button", { name: "Add Rod", exact: true }).click();
     await expect(page.locator("#tripGearRows .gear-used-row").last().locator(".trip-gear-lure")).toContainText(lureName);
@@ -140,6 +142,9 @@ test.describe("pushState router", () => {
 
     await page.goto("/trips", { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "New Trip", exact: true }).click();
+    await fillDate(page, "#tripDate", "10/05/2026");
+    await page.locator("#tripLocation").selectOption("loc-lake-erie");
+    await page.locator("#method").selectOption({ label: "Trolling" });
     await page.getByRole("button", { name: "Add Rod", exact: true }).click();
     await page.getByRole("button", { name: "Add Catch", exact: true }).click();
     await assertCleanBodyText();

@@ -90,29 +90,24 @@ class MediaTransaction:
                     self._undo.append(lambda backup=backup, target=target: backup.replace(target))
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            restore_existing: Callable[[], None] | None = None
             if target.exists():
                 if not overwrite:
                     raise FileExistsError(target)
                 backup = self._backup(target)
-                restore_existing = lambda backup=backup, target=target: backup.replace(target)
+                # Register restoration before attempting the replacement: a
+                # failed promotion must not discard the original backup.
+                self._undo.append(lambda backup=backup, target=target: backup.replace(target))
             assert source is not None
             if action == "copy":
+                # copy2 may leave a partial file before raising.
+                self.created(target)
                 shutil.copy2(source, target)
-                undo: Callable[[], None] = lambda target=target: target.unlink(missing_ok=True)
             elif action == "move":
                 source.replace(target)
-                undo = lambda source=source, target=target: target.replace(source)
+                self._undo.append(lambda source=source, target=target: target.replace(source))
             else:
                 source.replace(target)
-                undo = lambda target=target: target.unlink(missing_ok=True)
-
-            def undo_step(undo=undo, restore_existing=restore_existing) -> None:
-                undo()
-                if restore_existing:
-                    restore_existing()
-
-            self._undo.append(undo_step)
+                self.created(target)
 
     def rollback(self) -> None:
         while self._undo:

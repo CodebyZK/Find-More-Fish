@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { installBrowserEnv } from "./helpers/browser-env.mjs";
 
 installBrowserEnv();
+const { setState } = await import("../static/js/app-state.js");
+setState({ settings: { units: { speed: "mph" } } });
 const { saneStatsNumber, summarizeDownriggerCatchPositions, summarizeSpeedDelta, tripThermoclineDepth } = await import("../static/js/stats-performance.js");
 
 assert.equal(saneStatsNumber("", { min: 0 }), null);

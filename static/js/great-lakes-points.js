@@ -288,10 +288,11 @@ function setStationsEnabled(enabled) {
 
 export function modelPointKind() {
   const layer = greatLakesControlValue("layer");
-  return layer === "currents" || layer === "waves" ? layer : "temperature";
+  return layer === "currents" || layer === "waves" || layer === "wind" ? layer : "temperature";
 }
 
 const MODEL_POINT_LABELS = {
+  wind: "wind calculation points (GFS 0.25° grid)",
   currents: "current calculation points (model triangle centres)",
   waves: "wave calculation points (2.5 km wave model grid)",
   temperature: "temperature calculation points (model mesh nodes)"

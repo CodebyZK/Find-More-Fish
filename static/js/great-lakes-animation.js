@@ -1,3 +1,4 @@
+import { windParticleFields } from "./wind-fields.js";
 import { html, setHtml } from "./html.js";
 import { L } from "./vendor.js";
 import {
@@ -18,17 +19,19 @@ import {
   setWaveLegendRange,
   showPaletteRange,
   tooShallowNote,
-  waveParticleFields
+  waveParticleFields, savedWindParticleColor, windParticleColorParts
 } from "./great-lakes-conditions.js";
 import { createPaletteFilter, fitPaletteToView, paletteOverlays } from "./great-lakes-palette.js";
+import { createThermoclineFlow } from "./thermocline-flow.js";
 
-// Forecast animation: the chosen layer stepped through the next 48 hours,
+// Forecast animation: the chosen layer stepped through the next five days
+// (48 hours for waves),
 // every 3 hours, with one colour scale for every frame (the server picks it),
 // so colours only change where the water does. Every frame is downloaded
 // first, then each frame fades in over the one before it (which stays drawn
 // underneath, so colours blend straight into each other and never dip to the
-// map) for the full frame interval. Thermocline also fades the outgoing frame
-// away, so areas becoming mixed water clear gradually. Currents
+// map) for the full frame interval. Thermocline instead morphs the depth field
+// so its contours flow at a steady brightness. Currents
 // keep their particles flowing and only swap the field under them.
 // Time per frame and the share of it spent fading into the next, per speed.
 export const ANIMATION_SPEEDS = Object.freeze({
@@ -41,7 +44,8 @@ export const ANIMATION_FADE_SHARE = 1;
 export const ANIMATION_SPEED_STORAGE_KEY = "glc.AnimationSpeed";
 export const ANIMATION_POLL_MS = 1500;
 export const ANIMATION_FETCH_CONCURRENCY = 4;
-export const ANIMATION_IDLE_LABEL = "Play the next 48 hours";
+export const ANIMATION_IDLE_LABEL = "Play up to 5 days";
+export const WAVE_ANIMATION_IDLE_LABEL = "Play up to 48 hours";
 // Frames sit in their own pane, just under the overlay pane so current
 // particles stay on top. The pane carries the layer's opacity, so each image
 // can be fully opaque and a frame fading in over another never lets the map
@@ -70,6 +74,7 @@ const state = {
   fadeTimer: null,
   // Every frame's colours fit what is on screen across all frames (great-lakes-palette.js).
   paletteFit: null,
+  thermoclineFlow: null,
   stack: 0,
   particles: null,
   arrows: null,
@@ -132,7 +137,7 @@ export function greatLakesTimelineHtml() {
     <button type="button" class="great-lakes-play" data-gl-play aria-label="Play the forecast" aria-pressed="false" title="Play the forecast">${playIconHtml(false)}</button>
     <button type="button" class="great-lakes-timeline-speed" data-gl-animation-speed-choice value="${speed}" aria-label="Animation speed: ${speedLabel}. Click to change." title="Change animation speed">${speedLabel}</button>
     <div class="great-lakes-timeline-track">
-      <input type="range" data-gl-frame min="0" max="16" step="1" value="0" disabled aria-label="Forecast time" />
+      <input type="range" data-gl-frame min="0" max="40" step="1" value="0" disabled aria-label="Forecast time" />
       <div class="great-lakes-timeline-meta">
         <span class="great-lakes-timeline-label" data-gl-frame-label aria-live="off">${ANIMATION_IDLE_LABEL}</span>
       </div>
@@ -172,6 +177,7 @@ export function setupGreatLakesTimeline(host, reload) {
   const slider = host.querySelector("[data-gl-frame]");
   const stop = host.querySelector("[data-gl-animation-stop]");
   if (!play || !slider || !stop) return;
+  document.addEventListener("great-lakes-wind-color-changed", (event) => { if (state.layer === "wind") state.particles?.setParticleColor(windParticleColorParts(event.detail?.color)); });
   play.addEventListener("click", () => {
     if (!state.active) {
       state.active = true;
@@ -243,7 +249,7 @@ export function syncTimelineControls() {
     slider.step = state.playing ? "any" : "1";
     slider.value = String(state.index);
   }
-  if (label && !state.active) label.textContent = ANIMATION_IDLE_LABEL;
+  if (label && !state.active) label.textContent = document.querySelector("[data-gl-layer]")?.value === "waves" ? WAVE_ANIMATION_IDLE_LABEL : ANIMATION_IDLE_LABEL;
 }
 
 export function stopGreatLakesAnimation() {
@@ -279,6 +285,8 @@ export function clearGreatLakesAnimationVisuals() {
   state.previousWaveArrows = null;
   state.paletteFit?.stop();
   state.paletteFit = null;
+  state.thermoclineFlow?.remove();
+  state.thermoclineFlow = null;
   state.overlays = [];
 }
 
@@ -360,7 +368,12 @@ export async function loadGreatLakesAnimation(map, { layer, depth, signal, isCur
       return payload;
     });
     if (!isCurrent()) return false;
+    const thermoclineFlow = layer === "thermocline" ? await createThermoclineFlow(payloads, {
+      pane: ANIMATION_PANE, interactive: false, className: "great-lakes-thermocline-raster great-lakes-animation-frame"
+    }).catch(() => null) : null;
+    if (!isCurrent()) { thermoclineFlow?.remove(); return false; }
     clearGreatLakesVisuals();
+    state.thermoclineFlow = thermoclineFlow;
     state.layer = layer;
     state.depth = Number(depth) || 0;
     state.frames = index.frames;
@@ -378,7 +391,7 @@ export async function loadGreatLakesAnimation(map, { layer, depth, signal, isCur
     if (layer === "temperature") setTemperatureLegendRange(first);
     else if (layer === "thermocline") setThermoclineLegendRange(first);
     else if (layer === "waves") setWaveLegendRange(first);
-    else if (layer === "upwelling") { /* fixed legend */ }
+    else if (layer === "upwelling" || layer === "wind") { /* fixed legend */ }
     else {
       setCurrentLegendRange(first);
       setCurrentSpeedMax(first);
@@ -389,6 +402,9 @@ export async function loadGreatLakesAnimation(map, { layer, depth, signal, isCur
     const shownMetadata = state.payloads[state.index]?.metadata || {};
     announceGreatLakesLayer(layer, shownMetadata, state.backgroundPayloads?.[state.index]?.metadata || (layer === "temperature" ? shownMetadata : null));
     syncTimelineControls();
+    if (layer === "waves" && shownMetadata.availability?.state === "fallback") {
+      setGreatLakesStatus("NOAA wave data is temporarily unavailable; showing the last available wave forecast.");
+    }
     if (state.playing) scheduleNextFrame();
     return true;
   } catch (error) {
@@ -402,6 +418,16 @@ export async function loadGreatLakesAnimation(map, { layer, depth, signal, isCur
 }
 
 function buildFrames(map, background) {
+  if (state.layer === "wind") {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduced && state.payloads[0]?.points?.length) {
+      state.particles = createParticleLayer(map, windParticleFields(state.payloads[0].points), {
+        clipToGreatLakesWater: true,
+        particleColor: windParticleColorParts(savedWindParticleColor())
+      }).addTo(map);
+    }
+    return;
+  }
   const layer = state.layer;
   const rasterPayloads = layer === "currents"
     ? (background === "temperature" ? state.backgroundPayloads : background === "none" ? null : state.payloads)
@@ -415,11 +441,16 @@ function buildFrames(map, background) {
   applyFadeDuration();
   state.stack = 0;
   const filter = createPaletteFilter();
-  state.overlays = state.payloads.map((_, index) => paletteOverlays(rasterPayloads?.[index]?.rasters, filter, {
+  state.overlays = state.thermoclineFlow ? [] : state.payloads.map((_, index) => paletteOverlays(rasterPayloads?.[index]?.rasters, filter, {
     pane: ANIMATION_PANE, opacity: 0, interactive: false, className: `${style.className} great-lakes-animation-frame`
   }).map((overlay) => overlay.addTo(greatLakesConditionsLayer)));
+  state.thermoclineFlow?.addTo(greatLakesConditionsLayer);
   const frameRasters = state.payloads.map((_, index) => rasterPayloads?.[index]?.rasters || []);
-  state.paletteFit = fitPaletteToView(map, frameRasters, kind, filter, (low, high) => showPaletteRange(kind, low, high));
+  state.paletteFit = fitPaletteToView(map, frameRasters, kind, filter, (low, high) => {
+    showPaletteRange(kind, low, high);
+    state.thermoclineFlow?.setRange(low, high);
+    if (state.thermoclineFlow && !state.playing) state.thermoclineFlow.show(state.index);
+  });
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (layer === "waves") {
     if (greatLakesControlValue("wave-display") === "flow" && !reduced && state.payloads[0]?.arrows?.length) {
@@ -472,10 +503,17 @@ function animateOverlayOpacity(overlay, target, durationMs = 0) {
   overlay._glOpacityFrame = requestAnimationFrame(update);
 }
 
-// The new frame fades in over the one on screen. Thermocline must fade out too:
-// its transparent cells represent no thermocline, so retaining the outgoing
-// image there would hold old colours until they abruptly disappear at handoff.
+// Other forecast layers fade the new image over the one on screen.
 function crossfadeTo(index, fade) {
+  if (state.thermoclineFlow) {
+    const duration = fade ? speedTiming().fadeMs : 0;
+    if (duration && state.index !== index) state.thermoclineFlow.transition(state.index, index, duration);
+    else state.thermoclineFlow.show(index);
+    return;
+  }
+  // Older payloads without value rasters keep thermocline brightness stable
+  // by switching without fading.
+  if (state.layer === "thermocline") fade = false;
   const pane = state.map?.getPane(ANIMATION_PANE);
   // Flush the starting opacity before enabling the transition, including at
   // the loop boundary where this image has already been shown before.
@@ -484,11 +522,6 @@ function crossfadeTo(index, fade) {
   const { fadeMs } = speedTiming();
   const duration = fade ? fadeMs : 0;
   state.stack += 1;
-  if (state.layer === "thermocline" && duration > 0) {
-    state.overlays.forEach((overlays, frame) => {
-      if (frame !== index) overlays.forEach((overlay) => animateOverlayOpacity(overlay, 0, duration));
-    });
-  }
   (state.overlays[index] || []).forEach((overlay) => {
     overlay.setZIndex(state.stack);
     animateOverlayOpacity(overlay, 1, duration);
@@ -504,7 +537,8 @@ function showFrame(index, { fade = true, preserveWaveArrows = false, preserveCur
   if (!state.frames.length) return;
   state.index = Math.max(0, Math.min(state.frames.length - 1, index));
   const payload = state.payloads[state.index] || {};
-  crossfadeTo(state.index, fade);
+  if (state.layer !== "wind") crossfadeTo(state.index, fade);
+  if (state.layer === "wind") state.particles?.setFields(windParticleFields(payload.points || []));
   if (state.layer === "currents") {
     if (state.particles && payload.fields?.length) state.particles.setFields(payload.fields);
     if (state.arrows && !preserveCurrentArrows) {
@@ -574,8 +608,9 @@ function scheduleNextFrame(frameAlreadyShown = false) {
   // Begin blending immediately; hand off to the next frame when the blend
   // finishes, then start the following blend without a hold between frames.
   if (fadeMs) {
-    crossfadeTo(next, true);
+    if (state.layer !== "wind" && (state.layer !== "thermocline" || state.thermoclineFlow)) crossfadeTo(next, true);
     const payload = state.payloads[next] || {};
+    if (state.layer === "wind") state.particles?.setFields(windParticleFields(payload.points || []), { durationMs: frameMs });
     if (state.layer === "currents") state.particles?.setFields(payload.fields || [], { durationMs: frameMs });
     if (state.layer === "waves" && payload.arrows) state.particles?.setFields(waveParticleFields(payload.arrows), { durationMs: frameMs });
     if (state.layer === "waves" && greatLakesControlValue("wave-display") === "arrows") {

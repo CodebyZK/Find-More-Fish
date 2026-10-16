@@ -31,6 +31,7 @@ comparison with the surroundings is used.
 
 from __future__ import annotations
 
+import heapq
 import math
 import re
 import threading
@@ -43,17 +44,16 @@ from . import great_lakes_cache as gl_cache
 from . import great_lakes_service as service
 from .great_lakes_render import GridAxes, ScalarGrid
 
-UPWELLING_RENDER_VERSION = 1
-# Colours run from -SCORE_LIMIT_F (strong upwelling) to +SCORE_LIMIT_F (strong downwelling).
-SCORE_LIMIT_F = 8.0
-# A spot is marked from this score, and only if it differs from its surroundings by at least
-# MIN_CONTRAST_F (or, for downwelling, its thermocline is at least DEEPER_THERMOCLINE_MIN_FEET deeper).
-MIN_SCORE_F = 2.5
+UPWELLING_RENDER_VERSION = 3
+# The score is a dimensionless index, not a temperature difference.
+SCORE_LIMIT = 8.0
+MIN_SCORE = 1.5
 MIN_CONTRAST_F = 1.5
 CHANGE_WEIGHT = 0.5
-THERMOCLINE_SHIFT_FREE_FEET = 15.0
-THERMOCLINE_FEET_PER_F = 10.0
-DEEPER_THERMOCLINE_MIN_FEET = 25.0
+MIN_DISPLACEMENT_METERS = 25.0 / 3.28084
+MIN_BACKGROUND_STRATIFIED_SHARE = 0.2
+MIN_STRATIFICATION_DROP_C = 1.0
+MIN_DENSITY_DIFFERENCE = 0.1  # kg/m³; rejects inverted cold-season profiles.
 SURROUNDING_RADIUS_KM = 25.0
 MIN_WATER_DEPTH_METERS = 10.0
 # A marked patch must cover at least this much water: smaller ones are model eddies, not a
@@ -122,10 +122,54 @@ def _smooth(values: list[float | None], rows: int, columns: int) -> list[float |
     return [mean if ok else None for mean, ok in zip(means, use)]
 
 
+def reference_mean(values, use, rows, columns, ry, rx):
+    """Mean outside the central third; require at least three reference cells."""
+    outer = box_mean(values, use, rows, columns, ry, rx)
+    counts = box_mean([1.0 if ok else 0.0 for ok in use], [True] * len(use), rows, columns, ry, rx)
+    inner_y, inner_x = max(0, ry // 3), max(0, rx // 3)
+    inner = box_mean(values, use, rows, columns, inner_y, inner_x)
+    inner_counts = box_mean([1.0 if ok else 0.0 for ok in use], [True] * len(use), rows, columns, inner_y, inner_x)
+    result = []
+    for cell in range(rows * columns):
+        row, col = divmod(cell, columns)
+        area = (min(rows, row + ry + 1) - max(0, row - ry)) * (min(columns, col + rx + 1) - max(0, col - rx))
+        inner_area = (min(rows, row + inner_y + 1) - max(0, row - inner_y)) * (min(columns, col + inner_x + 1) - max(0, col - inner_x))
+        count, excluded = round(counts[cell] * area), round(inner_counts[cell] * inner_area)
+        result.append(((outer[cell] or 0.0) * count - (inner[cell] or 0.0) * excluded) / (count - excluded)
+                      if count - excluded >= 3 else None)
+    return result
+
+
+def _freshwater_density(temperature):
+    """Freshwater density at atmospheric pressure, kg/m³ (0–40°C)."""
+    t = temperature
+    return 999.842594 + 6.793952e-2 * t - 9.095290e-3 * t*t + 1.001685e-4 * t**3 - 1.120083e-6 * t**4 + 6.536332e-9 * t**5
+
+
+def _stratified_cells(volume, name, bottoms):
+    temperatures = volume.variables[name]
+    upper_level = volume.nearest_level(1.0)
+    result = []
+    for cell in range(volume.cells):
+        upper = temperatures[upper_level * volume.cells + cell]
+        stable = False
+        if volume.wet[cell] and bottoms[cell] is not None and math.isfinite(upper) and 4 < upper <= 40:
+            for level, depth in enumerate(volume.depths):
+                if depth < max(5.0, volume.depths[upper_level] + 3.0) or depth > bottoms[cell]:
+                    continue
+                lower = temperatures[level * volume.cells + cell]
+                if math.isfinite(lower) and 0 <= lower <= 40 and upper - lower >= MIN_STRATIFICATION_DROP_C:
+                    if _freshwater_density(lower) - _freshwater_density(upper) >= MIN_DENSITY_DIFFERENCE:
+                        stable = True
+                        break
+        result.append(stable)
+    return result
+
+
 def scores(surface: list[float | None], previous: list[float | None] | None, thermocline: list[float | None] | None,
            bottoms: list[float | None], rows: int, columns: int, ry: int, rx: int, min_cells: int = 1,
-           near_shore: list[bool] | None = None) -> dict[str, list[float | None]]:
-    """Per-cell scores (°F; negative upwelling, positive downwelling) and what they are made of.
+           near_shore: list[bool] | None = None, stratified: list[bool] | None = None) -> dict[str, list[float | None]]:
+    """Dimensionless evidence indices and their physical temperature/depth inputs.
 
     ``surface`` and ``previous`` (24 h earlier) are °C, ``thermocline`` tops and
     ``bottoms`` metres, ``None`` where unknown. ``ry``/``rx`` is the surroundings'
@@ -134,31 +178,57 @@ def scores(surface: list[float | None], previous: list[float | None] | None, the
     """
     cells = rows * columns
     open_water = [surface[cell] is not None and bottoms[cell] is not None and bottoms[cell] >= MIN_WATER_DEPTH_METERS for cell in range(cells)]
-    surrounding = box_mean([value or 0.0 for value in surface], open_water, rows, columns, ry, rx)
+    surrounding = reference_mean([value or 0.0 for value in surface], open_water, rows, columns, ry, rx)
     anomaly = _smooth([surface[cell] - surrounding[cell] if open_water[cell] and surrounding[cell] is not None else None for cell in range(cells)], rows, columns)
     change: list[float | None] = [None] * cells
+    relative_change: list[float | None] = [None] * cells
     if previous is not None:
-        change = _smooth([surface[cell] - previous[cell] if open_water[cell] and previous[cell] is not None else None for cell in range(cells)], rows, columns)
+        paired = [open_water[cell] and previous[cell] is not None for cell in range(cells)]
+        daily = [surface[cell] - previous[cell] if paired[cell] else 0.0 for cell in range(cells)]
+        background_change = reference_mean(daily, paired, rows, columns, ry, rx)
+        change = _smooth([daily[cell] if paired[cell] else None for cell in range(cells)], rows, columns)
+        relative_change = _smooth([daily[cell] - background_change[cell] if paired[cell] and background_change[cell] is not None else None for cell in range(cells)], rows, columns)
     shift: list[float | None] = [None] * cells
     if thermocline is not None:
         has = [open_water[cell] and thermocline[cell] is not None for cell in range(cells)]
-        typical = box_mean([value or 0.0 for value in thermocline], has, rows, columns, ry, rx)
+        typical = reference_mean([value or 0.0 for value in thermocline], has, rows, columns, ry, rx)
         shift = [thermocline[cell] - typical[cell] if has[cell] and typical[cell] is not None else None for cell in range(cells)]
+    if stratified is not None:
+        stable = stratified
+    else:
+        stable = [value is not None for value in thermocline] if thermocline is not None else [False] * cells
+    background_stable = reference_mean([float(value) for value in stable], open_water, rows, columns, ry, rx)
+    assessed = [open_water[cell] and background_stable[cell] is not None and background_stable[cell] >= MIN_BACKGROUND_STRATIFIED_SHARE for cell in range(cells)]
     raw: list[float | None] = [None] * cells
+    confidence: list[float | None] = [None] * cells
     for cell in range(cells):
-        if anomaly[cell] is None:
+        if anomaly[cell] is None or not assessed[cell]:
             continue
         contrast = anomaly[cell] * 1.8
-        moved = change[cell] * 1.8 if change[cell] is not None else 0.0
-        deeper = shift[cell] * FEET_PER_METER if shift[cell] is not None else 0.0
-        up = -contrast + CHANGE_WEIGHT * max(0.0, -moved)
-        down = contrast + CHANGE_WEIGHT * max(0.0, moved) + max(0.0, deeper - THERMOCLINE_SHIFT_FREE_FEET) / THERMOCLINE_FEET_PER_F
-        if -contrast >= MIN_CONTRAST_F and up >= MIN_SCORE_F:
-            raw[cell] = -min(up, SCORE_LIMIT_F)
-        elif contrast > -0.5 and (contrast >= MIN_CONTRAST_F or deeper >= DEEPER_THERMOCLINE_MIN_FEET) and down >= MIN_SCORE_F:
-            raw[cell] = min(down, SCORE_LIMIT_F)
+        moved = relative_change[cell] * 1.8 if relative_change[cell] is not None else 0.0
+        displacement = shift[cell] if shift[cell] is not None else 0.0
+        surface_direction = -1 if contrast <= -MIN_CONTRAST_F else 1 if contrast >= MIN_CONTRAST_F else 0
+        depth_direction = -1 if displacement <= -MIN_DISPLACEMENT_METERS else 1 if displacement >= MIN_DISPLACEMENT_METERS else 0
+        # Opposing substantial surface and subsurface signals are ambiguous.
+        if surface_direction and depth_direction and surface_direction != depth_direction:
+            continue
+        direction = depth_direction or surface_direction
+        if not direction:
+            continue
+        # Downwelling needs the deeper thermocline signal. Surface warmth or heating alone
+        # does not show that the warm layer thickened.
+        if direction > 0 and depth_direction != 1:
+            continue
+        evidence = (max(0.0, direction * contrast) / MIN_CONTRAST_F
+                    + CHANGE_WEIGHT * max(0.0, direction * moved) / MIN_CONTRAST_F
+                    + max(0.0, direction * displacement) / MIN_DISPLACEMENT_METERS)
+        if depth_direction or evidence >= MIN_SCORE:
+            raw[cell] = direction * min(max(MIN_SCORE, evidence), SCORE_LIMIT)
+            confidence[cell] = 2.0 if depth_direction and (surface_direction or direction * moved >= MIN_CONTRAST_F) else 1.0
     marked = _keep_shore_patches(raw, rows, columns, min_cells, near_shore)
-    return {"score": marked, "surrounding": surrounding, "anomaly": anomaly, "change": change, "shift": shift}
+    return {"score": marked, "surrounding": surrounding, "anomaly": anomaly, "change": change, "shift": shift,
+            "relativeChange": relative_change, "assessed": [float(value) for value in assessed], "eligible": [float(value) for value in open_water],
+            "confidence": [value if marked[cell] is not None else None for cell, value in enumerate(confidence)]}
 
 
 def _keep_shore_patches(score: list[float | None], rows: int, columns: int, min_cells: int, near_shore: list[bool] | None) -> list[float | None]:
@@ -189,8 +259,39 @@ def _keep_shore_patches(score: list[float | None], rows: int, columns: int, min_
     return kept
 
 
-def near_shore_cells(wet, rows: int, columns: int, reach_cells: int) -> list[bool]:
-    """Water cells within ``reach_cells`` steps of land (or the grid's edge)."""
+def near_shore_cells(wet, rows: int, columns: int, reach_cells: int,
+                     row_km: float | None = None, column_km: float | None = None,
+                     reach_km: float = SHORE_REACH_KM) -> list[bool]:
+    """Water cells within ``reach_km`` of known land; grid edges are not shores."""
+    if row_km is not None and column_km is not None:
+        distances = [math.inf] * (rows * columns)
+        queue = []
+        steps = [(dy, dx, math.hypot(dy * row_km, dx * column_km))
+                 for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx]
+        for cell in range(rows * columns):
+            if not wet[cell]:
+                continue
+            row, col = divmod(cell, columns)
+            for dy, dx, length in steps:
+                y, x = row + dy, col + dx
+                if 0 <= y < rows and 0 <= x < columns and not wet[y * columns + x]:
+                    distances[cell] = min(distances[cell], length)
+            if distances[cell] <= reach_km:
+                heapq.heappush(queue, (distances[cell], cell))
+        while queue:
+            distance, cell = heapq.heappop(queue)
+            if distance != distances[cell]:
+                continue
+            row, col = divmod(cell, columns)
+            for dy, dx, length in steps:
+                y, x = row + dy, col + dx
+                if 0 <= y < rows and 0 <= x < columns:
+                    other = y * columns + x
+                    following = distance + length
+                    if wet[other] and following <= reach_km and following < distances[other]:
+                        distances[other] = following
+                        heapq.heappush(queue, (following, other))
+        return [bool(wet[cell]) and distances[cell] <= reach_km for cell in range(rows * columns)]
     distance = [-1] * (rows * columns)
     frontier = []
     for cell in range(rows * columns):
@@ -210,8 +311,7 @@ def near_shore_cells(wet, rows: int, columns: int, reach_cells: int) -> list[boo
                         distance[y * columns + x] = step
                         following.append(y * columns + x)
         frontier = following
-    edge = {cell for cell in range(rows * columns) if wet[cell] and (cell < columns or cell >= (rows - 1) * columns or cell % columns in (0, columns - 1))}
-    return [bool(wet[cell]) and (0 < distance[cell] <= reach_cells or cell in edge) for cell in range(rows * columns)]
+    return [bool(wet[cell]) and 0 < distance[cell] <= reach_cells for cell in range(rows * columns)]
 
 
 def _cell_km2(latitude_axis: list[float], longitude_axis: list[float]) -> float:
@@ -234,11 +334,12 @@ def previous_day_path(path: str) -> str | None:
 
 
 def _previous_surface(model: str, run: dict, hour: int, path: str, volume, temperature_name: str) -> list[float | None] | None:
-    """The surface 24 hours before this model-hour, from the run one day older (``None`` if NOAA no longer has it)."""
-    disk_path = gl_cache.path_for("models", model, run["id"], f"daybefore-f{hour:03d}-{volume.y_stride}x{volume.x_stride}-v1.bin")
+    """Prefer the same run at t−24h; otherwise use the prior day's matching lead."""
+    disk_path = gl_cache.path_for("models", model, run["id"], f"daybefore-f{hour:03d}-{volume.y_stride}x{volume.x_stride}-v2.bin")
     record = gl_cache.read_record(disk_path)
     if record is None:
-        older = previous_day_path(path)
+        older = run.get("files", {}).get(hour - 24) if hour >= 24 else None
+        older = older or previous_day_path(path)
         if older is None:
             return None
         ny = (volume.rows - 1) * volume.y_stride + 1
@@ -284,7 +385,7 @@ def model_scores(model: str, forecast_hour: int) -> dict:
     run, hour, path, variables, volume = service._model_volume("temperature", model, forecast_hour)
     name = variables["temperature"]
     disk_path = gl_cache.path_for("models", model, run["id"], f"upwelling-f{hour:03d}-{volume.y_stride}x{volume.x_stride}-v{UPWELLING_RENDER_VERSION}.bin")
-    fields = ("score", "surface", "surrounding", "anomaly", "change", "shift")
+    fields = ("score", "surface", "surrounding", "anomaly", "change", "shift", "relativeChange", "assessed", "confidence", "eligible")
     with _lock:
         remembered = _partial_scores.get(str(disk_path))
     record = remembered[1] if remembered and time.time() < remembered[0] else gl_cache.read_record(disk_path)
@@ -296,11 +397,16 @@ def model_scores(model: str, forecast_hour: int) -> dict:
         ry, rx = _radius_cells(volume.latitude_axis, volume.longitude_axis, SURROUNDING_RADIUS_KM)
         cell_km2 = _cell_km2(volume.latitude_axis, volume.longitude_axis)
         min_cells = max(1, math.ceil(MIN_PATCH_KM2 / cell_km2))
-        near_shore = near_shore_cells(volume.wet, volume.rows, volume.columns, max(1, round(SHORE_REACH_KM / math.sqrt(cell_km2))))
-        result = scores(surface, previous, thermocline, _bottoms(model, volume, temperature), volume.rows, volume.columns, ry, rx, min_cells, near_shore)
+        row_km = abs(volume.latitude_axis[-1] - volume.latitude_axis[0]) / max(1, volume.rows - 1) * 111.2
+        column_km = abs(volume.longitude_axis[-1] - volume.longitude_axis[0]) / max(1, volume.columns - 1) * 111.2 * math.cos(math.radians((volume.latitude_axis[0] + volume.latitude_axis[-1]) / 2))
+        near_shore = near_shore_cells(volume.wet, volume.rows, volume.columns, 1, row_km, column_km)
+        bottoms = _bottoms(model, volume, temperature)
+        result = scores(surface, previous, thermocline, bottoms, volume.rows, volume.columns, ry, rx, min_cells, near_shore,
+                        _stratified_cells(volume, name, bottoms))
         result["surface"] = surface
         packed = {field: array("f", (math.nan if value is None else value for value in result[field])) for field in fields}
-        record = ({"hasChange": previous is not None}, packed)
+        comparison = ("same-run-forecast" if hour >= 24 and hour - 24 in run.get("files", {}) else "previous-run-forecast") if previous is not None else None
+        record = ({"hasChange": previous is not None, "changeComparison": comparison}, packed)
         if previous is not None:
             gl_cache.write_record(disk_path, {"model": model, "hasChange": True}, packed)
         else:
@@ -311,6 +417,7 @@ def model_scores(model: str, forecast_hour: int) -> dict:
     header, arrays = record
     return {
         "run": run, "hour": hour, "path": path, "volume": volume, "hasChange": bool(header.get("hasChange")),
+        "changeComparison": header.get("changeComparison"),
         **{field: [None if math.isnan(value) else float(value) for value in arrays[field]] for field in fields},
     }
 
@@ -326,6 +433,7 @@ def _render_input(model: str, forecast_hour: int) -> tuple[dict, dict]:
     metadata = {
         "model": model, "datasetUrl": f"{service.THREDDS}/dodsC/{path}", "validTime": service._valid_time_text(run, hour), "available": True,
         "run": run["id"], "selectedForecastHour": hour, "comparedWithDayBefore": found["hasChange"],
+        "changeComparison": found["changeComparison"],
         "upwellingCells": sum(value < 0 for value in marked), "downwellingCells": sum(value > 0 for value in marked),
     }
     render_input = {
@@ -340,13 +448,15 @@ def _render_input(model: str, forecast_hour: int) -> tuple[dict, dict]:
     return render_input, metadata
 
 
-def upwelling_rasters(forecast_hour: int, resolution: int, models: tuple[str, ...] = service.MODELS, scale: tuple[float, float] | None = None) -> dict:
+def upwelling_rasters(forecast_hour: int, resolution: int, models: tuple[str, ...] = service.MODELS, scale: tuple[float, float] | None = None, *, value_only: bool = False) -> dict:
     """Upwelling (blue) and downwelling (red) for every lake; clear where neither. ``scale`` is ignored: the colours are fixed."""
-    cache_key = ("upwelling", UPWELLING_RENDER_VERSION, service.THERMOCLINE_RASTER_RENDER_VERSION, service._data_key(models, forecast_hour), resolution, models, service._cache_bucket())
-    return service._shared_payload(_payload_cache, cache_key, lambda: _build(forecast_hour, resolution, models), MAX_PAYLOAD_CACHE_ENTRIES)
+    base_key = ("upwelling", UPWELLING_RENDER_VERSION, service.THERMOCLINE_RASTER_RENDER_VERSION, service._data_key(models, forecast_hour), resolution, models)
+    cache_key = (*base_key, *((True,) if value_only else ()), service._cache_bucket())
+    reused = service._value_only_from_rendered(_payload_cache, (*base_key, cache_key[-1])) if value_only else None
+    return reused or service._shared_payload(_payload_cache, cache_key, lambda: _build(forecast_hour, resolution, models, value_only=value_only), MAX_PAYLOAD_CACHE_ENTRIES)
 
 
-def _build(forecast_hour: int, resolution: int, models: tuple[str, ...]) -> dict:
+def _build(forecast_hour: int, resolution: int, models: tuple[str, ...], *, value_only: bool = False) -> dict:
     inputs, model_metadata = [], []
     with ThreadPoolExecutor(max_workers=len(models)) as executor:
         futures = {model: executor.submit(_render_input, model, forecast_hour) for model in models}
@@ -359,12 +469,12 @@ def _build(forecast_hour: int, resolution: int, models: tuple[str, ...]) -> dict
                 model_metadata.append({"model": model, "datasetUrl": "", "validTime": None, "available": False, "error": str(error)})
     metadata = {
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "forecastHour": forecast_hour, "models": model_metadata,
-        "minScoreF": -SCORE_LIMIT_F, "maxScoreF": SCORE_LIMIT_F, "thresholdF": MIN_SCORE_F,
+        "minScore": -SCORE_LIMIT, "maxScore": SCORE_LIMIT, "threshold": MIN_SCORE, "scoreUnits": "dimensionless",
     }
     rasters = []
     drawable = [item for item in inputs if any(item["grid"].valid)]
     if drawable:
-        rasters = service._render_rasters(drawable, UPWELLING_COLOR_STOPS, -SCORE_LIMIT_F, SCORE_LIMIT_F, resolution)
+        rasters = service._render_rasters(drawable, UPWELLING_COLOR_STOPS, -SCORE_LIMIT, SCORE_LIMIT, resolution, value_only=value_only)
     return {"rasters": rasters, "metadata": metadata}
 
 
@@ -380,13 +490,24 @@ def upwelling_value(forecast_hour: int, latitude: float, longitude: float, model
         if cell is None:
             continue
         score = found["score"][cell]
+        if found["assessed"][cell]:
+            assessment = "assessed"
+        elif not found["eligible"][cell]:
+            assessment = "too-shallow-or-missing"
+        elif found["surrounding"][cell] is None:
+            assessment = "insufficient-reference-data"
+        else:
+            assessment = "insufficient-stratification"
         return {
             "available": True, "model": model, "validTime": service._valid_time_text(found["run"], found["hour"]),
             "kind": None if score is None else ("upwelling" if score < 0 else "downwelling"),
-            "strengthF": None if score is None else abs(score),
+            "evidenceIndex": None if score is None else abs(score),
+            "confidence": None if score is None else ("supported" if found["confidence"][cell] == 2 else "possible"),
+            "assessment": assessment,
             "surfaceC": found["surface"][cell], "surroundingC": found["surrounding"][cell],
             "change24hC": found["change"][cell], "thermoclineShiftMeters": found["shift"][cell],
-            "openWater": found["anomaly"][cell] is not None, "comparedWithDayBefore": found["hasChange"],
+            "relativeChange24hC": found["relativeChange"][cell], "changeComparison": found["changeComparison"],
+            "openWater": bool(found["eligible"][cell]), "comparedWithDayBefore": found["hasChange"],
         }
     return {"available": False}
 

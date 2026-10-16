@@ -86,6 +86,12 @@ These are the canonical settings used by both clients.
 
 Typed fishing measurements such as `waterTemp`, `weight`, and `fowCaught` are strings. When a unit preference changes, the client converts persisted numeric fishing values in the same save transaction, then updates the preference. This keeps existing trips, catches, lost fish, analytics, and edit forms physically consistent in the newly selected display unit. Free-form nonnumeric text is left unchanged.
 
+Desktop landed, released, kept, and shaker totals sum catch quantities rather
+than catch records. Speed reports honor the selected unit and explicit unit
+suffixes; plausibility limits and slower/matched/faster comparisons use the
+same physical speeds across mph, kph, and knots. These rendering fixes do not
+reshape imported records or change the v2 archive/schema boundary.
+
 ## Location and Person
 
 ```json

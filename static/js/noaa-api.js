@@ -10,12 +10,13 @@ async function historyJson(path, params, signal) {
 
 export function setup() {
   window.noaaGreatLakesApi = {
-    async conditions({ layer, forecastHour, depth, resolution, models, dataVersion = "", time, signal }) {
+    async conditions({ layer, forecastHour, depth, resolution, models, targetC, selection, dataVersion = "", time, signal }) {
       if (time) return historyJson(`/layers/${encodeURIComponent(layer)}`, { time }, signal);
       // dataVersion changes when NOAA publishes a run or "Now" advances an
       // hour, so the browser's HTTP cache never serves an older frame.
       const query = new URLSearchParams({ forecastHour, depth, resolution, models, data: dataVersion });
-      const endpoint = layer === "temperature" ? `/api/great-lakes/temperature-raster?${query}` : layer === "thermocline" ? `/api/great-lakes/thermocline-raster?${query}` : layer === "waves" ? `/api/great-lakes/waves-raster?${query}` : layer === "upwelling" ? `/api/great-lakes/upwelling-raster?${query}` : `/api/great-lakes/currents?${query}`;
+      if (layer === "target-temperature") { query.set("targetC", targetC); query.set("selection", selection); }
+      const endpoint = layer === "wind" || layer === "target-temperature" ? `/api/great-lakes/${layer}?${query}` : layer === "temperature" ? `/api/great-lakes/temperature-raster?${query}` : layer === "thermocline" ? `/api/great-lakes/thermocline-raster?${query}` : layer === "waves" ? `/api/great-lakes/waves-raster?${query}` : layer === "upwelling" ? `/api/great-lakes/upwelling-raster?${query}` : `/api/great-lakes/currents?${query}`;
       const response = await fetch(endpoint, { signal });
       if (!response.ok) throw new Error("NOAA model request failed");
       return response.json();
@@ -65,6 +66,16 @@ export function setup() {
       if (options.time) return historyJson("/point/waves", { time: options.time, latitude: options.latitude, longitude: options.longitude });
       const response = await fetch(`/api/great-lakes/wave-value?${new URLSearchParams(options)}`);
       if (!response.ok) throw new Error("NOAA wave lookup failed");
+      return response.json();
+    },
+    async targetTemperatureValue(options) {
+      const response = await fetch(`/api/great-lakes/target-temperature-value?${new URLSearchParams(options)}`);
+      if (!response.ok) throw new Error("Target-temperature lookup unavailable");
+      return response.json();
+    },
+    async windValue(options) {
+      const response = await fetch(`/api/great-lakes/wind-value?${new URLSearchParams(options)}`);
+      if (!response.ok) throw new Error("Wind lookup unavailable");
       return response.json();
     },
     async status({ models, signal } = {}) {

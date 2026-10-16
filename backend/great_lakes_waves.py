@@ -18,12 +18,14 @@ same fine NOAA shoreline as every other layer.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import math
 import threading
 import time
 import urllib.error
 import urllib.request
 from array import array
+from contextlib import nullcontext
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -48,9 +50,9 @@ LONG_RUN_CYCLES = (1, 7, 13, 19)
 RUN_FILE = "waves-run.json"
 RUN_MAX_AGE_SECONDS = 5 * 60
 WAVE_FORMAT = 1
-WAVE_RENDER_VERSION = 3
+WAVE_RENDER_VERSION = 5
 # Fixed significant-wave-height colour domain, shared by every lake and hour.
-WAVE_COLOR_RANGE_METERS = (0.0, 6.0)
+WAVE_COLOR_RANGE_METERS = (0.0, 4.0)
 # Direction arrows sample every 4th model cell (about 10 km); the browser
 # thins them further to fit the zoom level.
 WAVE_ARROW_STRIDE = 4
@@ -62,7 +64,6 @@ _state_lock = threading.Lock()
 _discover_lock = threading.Lock()
 _memory: OrderedDict[tuple, "WaveHour"] = OrderedDict()
 _memory_lock = threading.Lock()
-_fetch_locks: dict[tuple, threading.Lock] = {}
 _mappings: dict[tuple, tuple[array, array]] = {}
 _water_points: dict[tuple, tuple[list[float], list[float]]] = {}
 _raster_cache: dict[tuple, dict] = {}
@@ -219,12 +220,16 @@ def load_wave_hour(run: dict, hour: int) -> WaveHour:
         if cached is not None:
             _memory.move_to_end(key)
             return cached
-        lock = _fetch_locks.setdefault(key, threading.Lock())
-    with lock:
+    target = _disk_path(run["id"], hour)
+    record = cache.read_record(target)
+    if record and all(name in record[1] for name in WAVE_VARIABLES):
+        header, arrays = record
+        cached = WaveHour(run["id"], hour, grib2.grid_from_header(header["grid"]), arrays["height"], arrays["period"], arrays["direction"])
+    with cache.resource_lock("waves", key) if cached is None else nullcontext():
         with _memory_lock:
-            cached = _memory.get(key)
+            cached = _memory.get(key, cached)
         if cached is None:
-            record = cache.read_record(_disk_path(run["id"], hour))
+            record = cache.read_record(target)
             if record and all(name in record[1] for name in WAVE_VARIABLES):
                 header, arrays = record
                 cached = WaveHour(run["id"], hour, grib2.grid_from_header(header["grid"]), arrays["height"], arrays["period"], arrays["direction"])
@@ -235,7 +240,6 @@ def load_wave_hour(run: dict, hour: int) -> WaveHour:
             _memory.move_to_end(key)
             while len(_memory) > MEMORY_HOURS:
                 _memory.popitem(last=False)
-            _fetch_locks.pop(key, None)
         return cached
 
 
@@ -352,7 +356,94 @@ def wave_arrows(waves: WaveHour, stride: int = WAVE_ARROW_STRIDE) -> list[dict]:
     return arrows
 
 
-def wave_rasters(forecast_hour: int, resolution: int, models: tuple[str, ...] = service.MODELS, scale: tuple[float, float] | None = None) -> dict:
+def _fallback_path(forecast_hour: int, resolution: int, models: tuple[str, ...], value_only: bool = False):
+    key = (WAVE_RENDER_VERSION, forecast_hour, resolution, tuple(models), *((True,) if value_only else ()))
+    name = hashlib.sha1(repr(key).encode("utf-8")).hexdigest() + ".json"
+    return cache.path_for("waves-fallbacks", name)
+
+
+def _complete_wave_payload(payload: dict, models: tuple[str, ...]) -> bool:
+    metadata = payload.get("metadata", {})
+    model_items = metadata.get("models", [])
+    expected = set(models)
+    available = {item.get("model") for item in model_items if item.get("available")}
+    raster_models = {raster.get("model") for raster in payload.get("rasters", [])}
+    return bool(expected) and available == expected and raster_models == expected
+
+
+def _wave_images_available(payload: dict, *, value_only: bool = False) -> bool:
+    rasters = payload.get("rasters", [])
+    return bool(rasters) and all(str(raster.get("valueUrl" if value_only else "imageUrl", "")).startswith("data:image/") for raster in rasters)
+
+
+def _remember_wave_payload(payload: dict, forecast_hour: int, resolution: int, models: tuple[str, ...], *, value_only: bool = False) -> None:
+    if not _complete_wave_payload(payload, models) or not _wave_images_available(payload, value_only=value_only):
+        return
+    path = _fallback_path(forecast_hour, resolution, models, value_only)
+    try:
+        cache.write_json(path, payload)
+        service._touch(path, payload)
+    except OSError:
+        pass
+
+
+def _last_good_wave_payload(forecast_hour: int, resolution: int, models: tuple[str, ...], *, value_only: bool = False) -> dict | None:
+    path = _fallback_path(forecast_hour, resolution, models, value_only)
+    saved = cache.read_json(path)
+    if isinstance(saved, dict) and _complete_wave_payload(saved, models) and _wave_images_available(saved, value_only=value_only):
+        service._touch(path, saved)
+        return saved
+
+    # Animation hours shift as the clock advances. Reuse the closest complete frame
+    # already drawn when this exact offset has not been saved yet.
+    candidates: list[tuple[dict, object]] = []
+    for directory in (cache.path_for("waves-fallbacks"), cache.path_for("rendered")):
+        try:
+            candidates.extend((candidate, candidate_path) for candidate_path in directory.glob("*.json")
+                              if isinstance((candidate := cache.read_json(candidate_path)), dict))
+        except OSError:
+            continue
+    usable = []
+    for candidate, candidate_path in candidates:
+        metadata = candidate.get("metadata", {})
+        try:
+            candidate_hour = int(metadata["forecastHour"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if metadata.get("source") == SOURCE and _complete_wave_payload(candidate, models) and _wave_images_available(candidate, value_only=value_only):
+            try:
+                modified = candidate_path.stat().st_mtime
+            except OSError:
+                modified = 0.0
+            usable.append((abs(candidate_hour - forecast_hour), -modified, candidate, candidate_path))
+    if not usable:
+        return None
+    _, _, previous, previous_path = min(usable, key=lambda item: (item[0], item[1]))
+    _remember_wave_payload(previous, forecast_hour, resolution, models, value_only=value_only)
+    service._touch(previous_path, previous)
+    return previous
+
+
+def _with_wave_fallback(payload: dict, forecast_hour: int, resolution: int, models: tuple[str, ...], *, value_only: bool = False) -> dict:
+    if _complete_wave_payload(payload, models):
+        _remember_wave_payload(payload, forecast_hour, resolution, models, value_only=value_only)
+        return payload
+    previous = _last_good_wave_payload(forecast_hour, resolution, models, value_only=value_only)
+    if previous is None:
+        return payload
+    old_metadata = previous.get("metadata", {})
+    error = next((item.get("error") for item in payload.get("metadata", {}).get("models", []) if item.get("error")),
+                 "NOAA wave data is temporarily unavailable")
+    models_metadata = [{**item, "stale": True, "refreshError": error} for item in old_metadata.get("models", [])]
+    metadata = {
+        **old_metadata,
+        "models": models_metadata,
+        "availability": {"state": "fallback", "lastGoodAt": old_metadata.get("lastReceivedAt") or old_metadata.get("generatedAt"), "error": error},
+    }
+    return {**previous, "metadata": metadata}
+
+
+def wave_rasters(forecast_hour: int, resolution: int, models: tuple[str, ...] = service.MODELS, scale: tuple[float, float] | None = None, *, value_only: bool = False) -> dict:
     """Wave height for every lake, drawn like the other layers, plus direction arrows.
 
     ``scale`` fixes the palette's (min, max) metres instead of fitting this frame.
@@ -360,10 +451,18 @@ def wave_rasters(forecast_hour: int, resolution: int, models: tuple[str, ...] = 
     scale = None
     run = discovered_wave_run()
     if not run.get("id"):
-        return _unavailable(forecast_hour, models, str(run.get("error") or "NOAA wave data is unavailable"))
-    hour = select_wave_hour(run, forecast_hour)
-    key = (WAVE_RENDER_VERSION, run["id"], hour, resolution, models, scale, service._cache_bucket())
-    return service._shared_payload(_raster_cache, key, lambda: _build_rasters(run, hour, forecast_hour, resolution, models, scale), service.MAX_PAYLOAD_CACHE_ENTRIES)
+        payload = _unavailable(forecast_hour, models, str(run.get("error") or "NOAA wave data is unavailable"))
+    else:
+        hour = select_wave_hour(run, forecast_hour)
+        base_key = (WAVE_RENDER_VERSION, run["id"], hour, resolution, models, scale)
+        key = (*base_key, *((True,) if value_only else ()), service._cache_bucket())
+        reused = service._value_only_from_rendered(_raster_cache, (*base_key, key[-1])) if value_only else None
+        payload = reused or service._shared_payload(_raster_cache, key, lambda: _build_rasters(run, hour, forecast_hour, resolution, models, scale, value_only=value_only), service.MAX_PAYLOAD_CACHE_ENTRIES)
+    result = _with_wave_fallback(payload, forecast_hour, resolution, models, value_only=value_only)
+    if value_only and result.get("rasters"):
+        return {**result, "rasters": [{key: value for key, value in raster.items() if key != "imageUrl"}
+                                       for raster in result["rasters"]]}
+    return result
 
 
 def _unavailable(forecast_hour: int, models: tuple[str, ...], error: str) -> dict:
@@ -373,7 +472,7 @@ def _unavailable(forecast_hour: int, models: tuple[str, ...], error: str) -> dic
     }}
 
 
-def _build_rasters(run: dict, hour: int, forecast_hour: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None = None) -> dict:
+def _build_rasters(run: dict, hour: int, forecast_hour: int, resolution: int, models: tuple[str, ...], scale: tuple[float, float] | None = None, *, value_only: bool = False) -> dict:
     try:
         waves = load_wave_hour(run, hour)
     except Exception as error:
@@ -395,7 +494,7 @@ def _build_rasters(run: dict, hour: int, forecast_hour: int, resolution: int, mo
     rasters = []
     if inputs:
         minimum, maximum = WAVE_COLOR_RANGE_METERS
-        rasters = service._render_rasters(inputs, WAVE_HEIGHT_COLOR_STOPS, minimum, maximum, resolution)
+        rasters = service._render_rasters(inputs, WAVE_HEIGHT_COLOR_STOPS, minimum, maximum, resolution, value_only=value_only)
         metadata["minHeightMeters"], metadata["maxHeightMeters"] = minimum, maximum
     return {"rasters": rasters, "arrows": wave_arrows(waves), "metadata": metadata}
 

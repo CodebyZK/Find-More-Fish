@@ -1,4 +1,4 @@
-"""Forecast animations for the fishing map: a layer stepped through the next 48 hours on one colour scale.
+"""Forecast animations for the fishing map: five days on one colour scale (48 hours for waves).
 
 The frames are "Now" and every 3 hours on the UTC clock (service.animation_offsets).
 Each frame is the layer drawn on a colour scale shared by every frame, so a
@@ -21,6 +21,8 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
+from datetime import datetime, timezone
+from . import great_lakes_wind as wind
 
 from . import great_lakes_cache as cache
 from . import great_lakes_refresher as refresher
@@ -33,21 +35,23 @@ DEPTH_LAYERS = {"temperature", "currents"}
 MODELS = service.MODELS
 # Animations always cover every lake at the map's one resolution (what the refresher draws).
 RESOLUTION = refresher.MAP_RESOLUTION
-LAYER_ENDPOINTS = {"temperature": "temperature-raster", "thermocline": "thermocline-raster", "currents": "currents", "waves": "waves-raster", "upwelling": "upwelling-raster"}
+LAYER_ENDPOINTS = {"temperature": "temperature-raster", "thermocline": "thermocline-raster", "currents": "currents", "waves": "waves-raster", "upwelling": "upwelling-raster", "wind": "wind"}
 
 
-def layer_payload(layer: str, forecast_hour: int, depth: float = 0.0, scale: tuple[float, float] | None = None) -> dict:
+def layer_payload(layer: str, forecast_hour: int, depth: float = 0.0, scale: tuple[float, float] | None = None, *, value_only: bool = False) -> dict:
     """One layer drawing for every lake. ``scale`` fixes its colour range instead of fitting this time."""
     if layer == "temperature":
-        return service.great_lakes_temperature_rasters(forecast_hour, depth, RESOLUTION, MODELS, scale)
+        return service.great_lakes_temperature_rasters(forecast_hour, depth, RESOLUTION, MODELS, scale, value_only=value_only)
     if layer == "thermocline":
-        return service.great_lakes_thermocline_rasters(forecast_hour, RESOLUTION, MODELS, scale)
+        return service.great_lakes_thermocline_rasters(forecast_hour, RESOLUTION, MODELS, scale, value_only=value_only)
     if layer == "currents":
-        return service.great_lakes_payload("currents", forecast_hour, depth, MODELS, scale)
+        return service.great_lakes_payload("currents", forecast_hour, depth, MODELS, scale, value_only=value_only)
     if layer == "waves":
-        return waves.wave_rasters(forecast_hour, RESOLUTION, MODELS, scale)
+        return waves.wave_rasters(forecast_hour, RESOLUTION, MODELS, scale, value_only=value_only)
     if layer == "upwelling":
-        return upwelling.upwelling_rasters(forecast_hour, RESOLUTION, MODELS, scale)
+        return upwelling.upwelling_rasters(forecast_hour, RESOLUTION, MODELS, scale, value_only=value_only)
+    if layer == "wind":
+        return wind.forecast(forecast_hour)
     raise ValueError(f"Unknown layer {layer!r}")
 
 
@@ -74,7 +78,7 @@ RANGE_FIELDS = {
     "thermocline": ("minDepthMeters", "maxDepthMeters"),
     "currents": ("minSpeedMetersPerSecond", "maxSpeedMetersPerSecond"),
     "waves": ("minHeightMeters", "maxHeightMeters"),
-    "upwelling": ("minScoreF", "maxScoreF"),
+    "upwelling": ("minScore", "maxScore"),
 }
 # The shared range is widened to these steps, so the hourly "Now" frame
 # rarely changes it (which would redraw every frame).
@@ -86,6 +90,16 @@ INDEX_WAIT_SECONDS = 3.0
 MAX_JOBS = 32
 SCALE_MAX_AGE_SECONDS = 12 * 3600
 PREPARATION_PROGRESS_MAX_AGE_SECONDS = 5 * 60
+FIXED_SCALE_LAYERS = {"waves", "upwelling"}
+
+
+def _progress_total(layer: str, offsets: tuple[int, ...]) -> int:
+    """Count only real passes; fixed-scale layers skip the range scan."""
+    return len(offsets) * (1 if layer in FIXED_SCALE_LAYERS else 2)
+
+
+def _scale_progress_steps(layer: str, offsets: tuple[int, ...]) -> int:
+    return 0 if layer in FIXED_SCALE_LAYERS else len(offsets)
 
 _scales: OrderedDict[tuple, tuple[float, float]] = OrderedDict()
 _jobs: OrderedDict[tuple, "_Job"] = OrderedDict()
@@ -131,7 +145,34 @@ def _depth(layer: str, depth: float) -> float | None:
     return service.snap_depth(depth, MODELS) if layer in DEPTH_LAYERS else None
 
 
+def offsets_for(layer: str, now: float | None = None, *, runs: dict[str, dict] | None = None) -> tuple[int, ...]:
+    """Frame offsets with published files for every lake, within the layer's horizon."""
+    maximum = waves.GLWU_FINAL_HOUR if layer == "waves" else service.ANIMATION_SPAN_HOURS
+    offsets = tuple(hour for hour in service.animation_offsets(now) if hour <= maximum)
+    if layer in {"waves", "wind"}:
+        return offsets
+    runs = service.known_runs() if runs is None else runs
+    if not all(run.get("files") for run in (runs.get(model, {}) for model in MODELS)):
+        return offsets
+    current = time.time() if now is None else now
+    available = [offsets[0]]
+    for hour in offsets[1:]:
+        def has_file(run: dict) -> bool:
+            selected = service.select_forecast_run(run, hour, current)
+            if not selected.get("files"):
+                return False
+            file_hour = math.floor((current - float(selected["cycleEpoch"])) / 3600 + 0.5) + hour
+            return file_hour in selected["files"]
+        if not all(has_file(runs[model]) for model in MODELS):
+            break
+        available.append(hour)
+    return tuple(available)
+
+
 def _version(layer: str) -> str:
+    if layer == "wind":
+        metadata = wind.forecast(0)["metadata"]
+        return "|".join((metadata["run"], metadata["validTime"], f"draw:{wind.WIND_DATA_VERSION}"))
     return data_versions(refresher.data_status(MODELS))[layer]
 
 
@@ -227,13 +268,10 @@ def _remember_scale(key: tuple, scale: tuple[float, float], write: bool = True) 
 
 def _compute_scale(layer: str, depth: float | None, offsets: tuple[int, ...], progress=None) -> tuple[float, float] | None:
     fixed = {"waves": waves.WAVE_COLOR_RANGE_METERS,
-             "upwelling": (-upwelling.SCORE_LIMIT_F, upwelling.SCORE_LIMIT_F)}
+             "upwelling": (-upwelling.SCORE_LIMIT, upwelling.SCORE_LIMIT)}
     if layer in fixed:
         # These renderers always use one domain. No first pass through every
         # frame is needed; the drawing pass still checks frame availability.
-        if progress:
-            for _ in offsets:
-                progress()
         return fixed[layer]
     ranges = []
     for forecast_hour in offsets:
@@ -255,7 +293,7 @@ def _compute_scale(layer: str, depth: float | None, offsets: tuple[int, ...], pr
             metadata = {}
         found = frame_range(layer, metadata)
         if found is None:
-            payload = layer_payload(layer, forecast_hour, depth or 0.0)
+            payload = layer_payload(layer, forecast_hour, depth or 0.0, value_only=True)
             found = frame_range(layer, payload.get("metadata", {}))
         if found:
             ranges.append(found)
@@ -264,11 +302,11 @@ def _compute_scale(layer: str, depth: float | None, offsets: tuple[int, ...], pr
     return shared_scale(layer, ranges)
 
 
-def scale_for(layer: str, depth: float = 0.0, offsets: tuple[int, ...] | None = None) -> tuple[float, float] | None:
+def scale_for(layer: str, depth: float = 0.0, offsets: tuple[int, ...] | None = None, *, version: str | None = None) -> tuple[float, float] | None:
     """The shared colour scale of a layer's animation now, computed from cached model ranges if needed."""
-    offsets = tuple(offsets or service.animation_offsets())
+    offsets = tuple(offsets or offsets_for(layer))
     level = _depth(layer, depth)
-    key = _key(layer, level, offsets, _version(layer))
+    key = _key(layer, level, offsets, version or _version(layer))
     scale = _stored_scale(key)
     if scale is None:
         scale = _compute_scale(layer, level, offsets)
@@ -277,12 +315,16 @@ def scale_for(layer: str, depth: float = 0.0, offsets: tuple[int, ...] | None = 
     return scale
 
 
-def frame_payload(layer: str, forecast_hour: int, depth: float = 0.0) -> dict:
+def frame_payload(layer: str, forecast_hour: int, depth: float = 0.0, *, version: str | None = None) -> dict:
     """One animation frame: the layer at an animation offset, drawn on the animation's shared scale."""
-    offsets = service.animation_offsets()
+    if layer == "wind":
+        anchor = _wind_anchor(version)
+        return wind.forecast(nearest_forecast_hour(forecast_hour, offsets_for(layer, anchor)), now=anchor)
+    version = _version(layer)
+    offsets = offsets_for(layer)
     forecast_hour = nearest_forecast_hour(forecast_hour, offsets)
-    scale = scale_for(layer, depth, offsets)
-    payload = layer_payload(layer, forecast_hour, depth, scale)
+    scale = scale_for(layer, depth, offsets, version=version)
+    payload = layer_payload(layer, forecast_hour, depth, scale, value_only=True)
     return payload
 
 
@@ -292,8 +334,17 @@ def _valid_time(payload: dict) -> str | None:
 
 
 def _available(payload: dict) -> bool:
+    if "available" in payload.get("metadata", {}):
+        return bool(payload["metadata"]["available"])
     models = payload.get("metadata", {}).get("models", [])
     return bool(models) and all(item.get("available", True) for item in models)
+
+
+def _stale(payload: dict) -> bool:
+    metadata = payload.get("metadata", {})
+    availability = metadata.get("availability") or {}
+    return (isinstance(availability, dict) and availability.get("state") == "fallback"
+            or any(item.get("stale") for item in metadata.get("models", [])))
 
 
 def _prepare(layer: str, depth: float | None, offsets: tuple[int, ...], version: str, job: _Job, progress_key: tuple | None = None) -> dict:
@@ -311,18 +362,19 @@ def _prepare(layer: str, depth: float | None, offsets: tuple[int, ...], version:
             raise RuntimeError("NOAA data for this animation is unavailable")
         _remember_scale(key, scale)
     else:
-        job.done += len(offsets)
+        job.done += _scale_progress_steps(layer, offsets)
         if progress_key is not None:
             _remember_progress(progress_key, job)
     frames = []
     for forecast_hour in offsets:
         if progress_key is not None:
             _remember_progress(progress_key, job)
-        payload = layer_payload(layer, forecast_hour, depth or 0.0, scale)
+        payload = layer_payload(layer, forecast_hour, depth or 0.0, scale, value_only=True)
         frames.append({
             "forecastHour": forecast_hour,
             "validTime": _valid_time(payload),
             "available": _available(payload),
+            "stale": _stale(payload),
             "url": layer_url(layer, forecast_hour, depth, version),
         })
         step()
@@ -353,7 +405,7 @@ def _job(layer: str, depth: float | None, offsets: tuple[int, ...], version: str
             return job
         if _stored_progress(key) is not None:
             return None
-        job = _Job(len(offsets) * 2)
+        job = _Job(_progress_total(layer, offsets))
         _jobs[key] = job
         while len(_jobs) > MAX_JOBS:
             _jobs.popitem(last=False)
@@ -362,20 +414,42 @@ def _job(layer: str, depth: float | None, offsets: tuple[int, ...], version: str
     return job
 
 
+def _wind_anchor(version: str | None = None) -> float:
+    if version:
+        try:
+            return datetime.fromisoformat(version.split("|", 2)[1].replace("Z", "+00:00")).timestamp()
+        except (IndexError, ValueError):
+            pass
+    return time.time()
+
+
+def _wind_index() -> dict:
+    version = _version("wind")
+    anchor = _wind_anchor(version)
+    offsets = offsets_for("wind", anchor)
+    return {"layer": "wind", "depthMeters": None, "stepHours": service.ANIMATION_STEP_HOURS,
+            "spanHours": service.ANIMATION_SPAN_HOURS, "version": version, "ready": True,
+            "scale": {"min": 0, "max": 1}, "progress": {"done": len(offsets), "total": len(offsets)},
+            "frames": [{"forecastHour": hour, "validTime": datetime.fromtimestamp(anchor + hour * 3600, timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "available": True, "url": layer_url("wind", hour, None, version)} for hour in offsets]}
+
+
 def index(layer: str, depth: float = 0.0, wait_seconds: float = INDEX_WAIT_SECONDS) -> dict:
     """A layer's animation now: its frames and shared scale, or progress while it is prepared."""
-    offsets = service.animation_offsets()
-    level = _depth(layer, depth)
+    if layer == "wind":
+        return _wind_index()
     version = _version(layer)
+    offsets = offsets_for(layer)
+    level = _depth(layer, depth)
     key = _key(layer, level, offsets, version)
-    total = len(offsets) * 2
+    total = _progress_total(layer, offsets)
     prepared = _stored_prepared(key)
     if prepared is not None:
         return {
             "layer": layer,
             "depthMeters": level,
             "stepHours": service.ANIMATION_STEP_HOURS,
-            "spanHours": service.ANIMATION_SPAN_HOURS,
+            "spanHours": waves.GLWU_FINAL_HOUR if layer == "waves" else service.ANIMATION_SPAN_HOURS,
             "version": version,
             "ready": True,
             "progress": {"done": total, "total": total},
@@ -389,7 +463,7 @@ def index(layer: str, depth: float = 0.0, wait_seconds: float = INDEX_WAIT_SECON
                 "layer": layer,
                 "depthMeters": level,
                 "stepHours": service.ANIMATION_STEP_HOURS,
-                "spanHours": service.ANIMATION_SPAN_HOURS,
+                "spanHours": waves.GLWU_FINAL_HOUR if layer == "waves" else service.ANIMATION_SPAN_HOURS,
                 "version": version,
                 "ready": True,
                 "progress": {"done": total, "total": total},
@@ -399,7 +473,7 @@ def index(layer: str, depth: float = 0.0, wait_seconds: float = INDEX_WAIT_SECON
             "layer": layer,
             "depthMeters": level,
             "stepHours": service.ANIMATION_STEP_HOURS,
-            "spanHours": service.ANIMATION_SPAN_HOURS,
+            "spanHours": waves.GLWU_FINAL_HOUR if layer == "waves" else service.ANIMATION_SPAN_HOURS,
             "version": version,
             "ready": False,
             "progress": _stored_progress(key) or {"done": 0, "total": total},
@@ -409,7 +483,7 @@ def index(layer: str, depth: float = 0.0, wait_seconds: float = INDEX_WAIT_SECON
         "layer": layer,
         "depthMeters": level,
         "stepHours": service.ANIMATION_STEP_HOURS,
-        "spanHours": service.ANIMATION_SPAN_HOURS,
+        "spanHours": waves.GLWU_FINAL_HOUR if layer == "waves" else service.ANIMATION_SPAN_HOURS,
         "version": version,
         "ready": job.result is not None,
         "progress": {"done": min(job.done, job.total), "total": job.total},
@@ -423,12 +497,12 @@ def index(layer: str, depth: float = 0.0, wait_seconds: float = INDEX_WAIT_SECON
 
 def prepare(layer: str, depth: float = 0.0) -> dict:
     """Prepare an animation in the calling thread (the refresher) and return it."""
-    offsets = service.animation_offsets()
-    level = _depth(layer, depth)
     version = _version(layer)
+    offsets = offsets_for(layer)
+    level = _depth(layer, depth)
     key = _key(layer, level, offsets, version)
     prepared = _stored_prepared(key)
-    if prepared is not None:
+    if prepared is not None and not any(frame.get("stale") for frame in prepared.get("frames", [])):
         return prepared
 
     deadline = time.monotonic() + 30 * 60
@@ -443,7 +517,7 @@ def prepare(layer: str, depth: float = 0.0) -> dict:
                 job = None
                 remote_progress = True
             else:
-                job = _Job(len(offsets) * 2)
+                job = _Job(_progress_total(layer, offsets))
                 _jobs[key] = job
                 while len(_jobs) > MAX_JOBS:
                     _jobs.popitem(last=False)

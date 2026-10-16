@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
+from backend.cloud_storage import CloudStorageError
 from backend.backend_config import DEFAULT_LOGBOOK
 from conftest import make_app
 
@@ -50,7 +51,7 @@ class CloudStorageRouteTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(["orphan.jpg"], [item["filename"] for item in response.get_json()["media"]])
 
-    @patch("backend.cloud_storage.list_media", return_value=[{}] * 500)
+    @patch("backend.cloud_storage.list_media", side_effect=CloudStorageError("Cloud media inventory reached its 500-item limit", 503))
     @patch("backend.cloud_storage.get_logbook")
     def test_orphan_scan_rejects_truncated_cloud_inventory(self, get_logbook, _list_media) -> None:
         get_logbook.return_value = (sample_logbook(), '"7"')
@@ -62,16 +63,15 @@ class CloudStorageRouteTests(unittest.TestCase):
 
     @patch("backend.cloud_storage.list_media")
     @patch("backend.cloud_storage.get_logbook")
-    def test_orphan_scan_checks_categories_when_total_exceeds_limit(self, get_logbook, list_media) -> None:
+    def test_orphan_scan_accepts_complete_inventory_over_500_items(self, get_logbook, list_media) -> None:
         get_logbook.return_value = (sample_logbook(), '"7"')
-        list_media.side_effect = lambda category=None: ([{}] * 500 if category is None else [
-            {"category": category, "filename": f"{category}.jpg"}
-        ])
+        list_media.return_value = [{"category": "lures", "filename": f"{index}.jpg"} for index in range(501)]
 
         response = self.client.get("/api/orphaned-media")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual(6, len(response.get_json()["media"]))
+        self.assertEqual(501, len(response.get_json()["media"]))
+        list_media.assert_called_once_with()
 
     @patch("backend.cloud_storage.get_logbook")
     def test_logbook_get_exposes_cloud_revision(self, get_logbook) -> None:

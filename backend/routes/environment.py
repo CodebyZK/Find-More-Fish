@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import gzip
 import math
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from flask import Blueprint, Response, abort, current_app, jsonify, request
 
 from .. import great_lakes_animation as animation
+from .. import great_lakes_target_temperature as target_temperature
+from .. import great_lakes_wind as wind
 from .. import great_lakes_history_client as saved_history
 from .. import great_lakes_upwelling as upwelling
 from ..bathymetry_service import apply_depth_result, lookup_depth, valid_coordinates
@@ -16,9 +19,11 @@ from ..great_lakes_observations import great_lakes_observations
 from ..great_lakes_refresher import data_status
 from ..great_lakes_waves import wave_model_points, wave_rasters, wave_value
 from ..great_lakes_service import (
+    MAX_DEPTH_METERS,
     MODEL_POINT_KINDS,
     MODELS,
     great_lakes_current_profile,
+    discovered_runs,
     great_lakes_model_points,
     great_lakes_payload,
     great_lakes_temperature_profile,
@@ -48,15 +53,16 @@ CACHEABLE_ENDPOINTS = {
     "environment.great_lakes_wave_raster",
     "environment.great_lakes_upwelling_raster",
     "environment.great_lakes_model_calculation_points",
+    "environment.great_lakes_shoreline",
     "environment.great_lakes_history_layer",
     "environment.great_lakes_history_image",
 }
 
 
-def _forecast_hour() -> int:
+def _forecast_hour(maximum: int = 120) -> int:
     # The forecast choices and the forecast animation's frames.
     requested = int(request.args.get("forecastHour", 0))
-    return min(served_offsets(), key=lambda value: abs(value - requested))
+    return min((hour for hour in served_offsets() if hour <= maximum), key=lambda value: abs(value - requested))
 
 
 def _animation_frame(layer: str) -> Response | None:
@@ -70,11 +76,17 @@ def _animation_frame(layer: str) -> Response | None:
         abort(400, "forecastHour and depth must be numeric")
     if not (math.isfinite(requested) and math.isfinite(depth)):
         abort(400, "forecastHour and depth must be numeric")
-    return _cached(animation.frame_payload(layer, requested, max(0.0, min(500.0, depth))))
+    return _cached(animation.frame_payload(layer, requested, max(0.0, min(MAX_DEPTH_METERS, depth))))
 
 
-def _depth() -> int:
-    return max(0, min(500, int(request.args.get("depth", 0))))
+def _depth() -> float:
+    try:
+        depth = float(request.args.get("depth", 0))
+    except ValueError:
+        abort(400, "depth must be numeric")
+    if not math.isfinite(depth):
+        abort(400, "depth must be numeric")
+    return max(0.0, min(MAX_DEPTH_METERS, depth))
 
 
 def _resolution() -> int:
@@ -150,7 +162,11 @@ def bathymetry_contours(lake: str) -> Response:
     """Stream one bundled NOAA contour collection as GeoJSON."""
     if lake not in {"erie", "huron", "michigan", "ontario", "superior"}:
         abort(404)
-    path = Path(__file__).resolve().parents[2] / "static" / "data" / f"lake-{lake}-contours.geojson.gz"
+    detail = request.args.get("detail", "full")
+    if detail not in {"6", "9", "12", "full"}:
+        abort(400, "detail must be 6, 9, 12, or full")
+    suffix = "" if detail == "full" else f"-z{detail}"
+    path = Path(__file__).resolve().parents[2] / "static" / "data" / f"lake-{lake}-contours{suffix}.geojson.gz"
     if not path.is_file():
         abort(404)
     response = Response(_decompressed_bathymetry_contours(path), mimetype="application/geo+json")
@@ -226,7 +242,7 @@ def great_lakes_wave_raster() -> Response:
     if frame is not None:
         return frame
     try:
-        forecast_hour, resolution = _forecast_hour(), _resolution()
+        forecast_hour, resolution = _forecast_hour(48), _resolution()
     except ValueError:
         abort(400, "forecastHour and resolution must be numeric")
     return _cached(wave_rasters(forecast_hour, resolution, _models()))
@@ -263,7 +279,7 @@ def great_lakes_upwelling_value_at_point() -> Response:
 @blueprint.get("/api/great-lakes/wave-value")
 def great_lakes_wave_value_at_point() -> Response:
     try:
-        forecast_hour = _forecast_hour()
+        forecast_hour = _forecast_hour(48)
     except ValueError:
         abort(400, "forecastHour must be numeric")
     coordinates = valid_coordinates({"latitude": request.args.get("latitude"), "longitude": request.args.get("longitude")})
@@ -279,7 +295,7 @@ def great_lakes_wave_value_at_point() -> Response:
 @blueprint.get("/api/great-lakes/animation/<layer>")
 def great_lakes_animation(layer: str) -> tuple[Response, int] | Response:
     """A layer's forecast animation: frame URLs and their shared colour scale, or progress while it is drawn."""
-    if layer not in animation.LAYERS:
+    if layer not in (*animation.LAYERS, "wind"):
         abort(404)
     try:
         depth = float(request.args.get("depth", 0)) if layer in animation.DEPTH_LAYERS else 0.0
@@ -287,7 +303,15 @@ def great_lakes_animation(layer: str) -> tuple[Response, int] | Response:
         abort(400, "depth must be numeric")
     if not math.isfinite(depth):
         abort(400, "depth must be numeric")
-    payload = animation.index(layer, max(0.0, min(500.0, depth)))
+    try:
+        payload = animation.index(layer, max(0.0, min(MAX_DEPTH_METERS, depth)))
+    except RuntimeError:
+        if layer != "wind":
+            raise
+        response = jsonify({"layer": layer, "ready": False, "error": "NOAA wind forecast is temporarily unavailable"})
+        response.status_code = 503
+        response.headers["Cache-Control"] = "no-store"
+        return response
     if payload["ready"]:
         return jsonify(payload)
     return jsonify(payload), 503 if payload.get("error") else 202
@@ -296,6 +320,31 @@ def great_lakes_animation(layer: str) -> tuple[Response, int] | Response:
 @blueprint.get("/api/great-lakes/status")
 def great_lakes_data_status() -> Response:
     return jsonify(data_status(_models()))
+
+
+@blueprint.get("/api/great-lakes/shoreline")
+def great_lakes_shoreline() -> Response | tuple[Response, int]:
+    """Native FVCOM mesh boundaries used to clip Great Lakes map flow."""
+    from ..great_lakes_shoreline import model_rings
+
+    runs = discovered_runs(MODELS)
+
+    def outline(model: str) -> dict:
+        run = runs[model]
+        if not run.get("files"):
+            raise RuntimeError(str(run.get("error") or "NOAA run not discovered"))
+        path = run["files"][min(run["files"])]
+        return {"model": model, "rings": model_rings(model, path)}
+
+    try:
+        with ThreadPoolExecutor(max_workers=len(MODELS)) as executor:
+            outlines = list(executor.map(outline, MODELS))
+    except Exception:
+        current_app.logger.exception("NOAA native Great Lakes boundaries are unavailable.")
+        return jsonify({"outlines": [], "error": "Native model shoreline unavailable"}), 503
+    response = jsonify({"outlines": outlines})
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @blueprint.get("/api/great-lakes/observations")
@@ -312,8 +361,8 @@ def great_lakes_observation_stations() -> Response | tuple[Response, int]:
 @blueprint.get("/api/great-lakes/model-points")
 def great_lakes_model_calculation_points() -> Response:
     kind = request.args.get("kind", "temperature")
-    if kind not in MODEL_POINT_KINDS and kind != "waves":
-        abort(400, "kind must be temperature, currents, or waves")
+    if kind not in MODEL_POINT_KINDS and kind not in {"waves", "wind"}:
+        abort(400, "kind must be temperature, currents, waves, or wind")
     try:
         bounds = tuple(float(request.args[name]) for name in ("south", "west", "north", "east"))
     except (KeyError, ValueError):
@@ -321,6 +370,8 @@ def great_lakes_model_calculation_points() -> Response:
     south, west, north, east = bounds
     if not all(math.isfinite(value) for value in bounds) or not (-90 <= south < north <= 90 and -180 <= west < east <= 180):
         abort(400, "bounds must describe a valid area")
+    if kind == "wind":
+        return _wind_response(lambda: wind.model_points(bounds))
     if kind == "waves":
         return _cached(wave_model_points(bounds))
     return _cached(great_lakes_model_points(kind, bounds, _models()))
@@ -385,3 +436,74 @@ def great_lakes(layer: str) -> Response:
     except ValueError:
         abort(400, "forecastHour and depth must be numeric")
     return _cached(great_lakes_payload(layer, forecast_hour, depth, _models()))
+
+
+def _target_temperature() -> float:
+    try:
+        value = float(request.args.get("targetC", 80 / 9))
+    except ValueError:
+        abort(400, "targetC must be numeric")
+    if not math.isfinite(value) or not 0 <= value <= 30:
+        abort(400, "targetC must be between 0 and 30 Celsius")
+    return round(value, 4)
+
+
+def _forecast_coordinates():
+    coordinates = valid_coordinates({"latitude": request.args.get("latitude"), "longitude": request.args.get("longitude")})
+    if coordinates is None:
+        abort(400, "latitude and longitude must be valid coordinates")
+    try:
+        hour = _forecast_hour()
+    except ValueError:
+        abort(400, "forecastHour must be numeric")
+    return hour, coordinates
+
+
+def _wind_response(build):
+    try:
+        return _cached(build())
+    except RuntimeError:
+        response = jsonify({"available": False, "error": "NOAA wind forecast is temporarily unavailable"})
+        response.status_code = 503
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
+@blueprint.get("/api/great-lakes/target-temperature")
+def target_temperature_layer():
+    target = _target_temperature()
+    selection = request.args.get("selection", "shallowest")
+    if selection not in {"shallowest", "deepest"}:
+        abort(400, "selection must be shallowest or deepest")
+    if request.args.get("animation") == "1":
+        abort(400, "Target temperature supports forecast choices, not animation")
+    try:
+        hour = _forecast_hour()
+    except ValueError:
+        abort(400, "forecastHour must be numeric")
+    return _cached(target_temperature.rasters(hour, target, selection))
+
+
+@blueprint.get("/api/great-lakes/target-temperature-value")
+def target_temperature_point():
+    hour, coordinates = _forecast_coordinates()
+    return _cached(target_temperature.point(hour, _target_temperature(), *coordinates))
+
+
+@blueprint.get("/api/great-lakes/wind")
+def wind_layer():
+    try:
+        hour = float(request.args.get("forecastHour", 0))
+    except ValueError:
+        abort(400, "forecastHour must be numeric")
+    if not math.isfinite(hour):
+        abort(400, "forecastHour must be finite")
+    if request.args.get("animation") == "1":
+        return _wind_response(lambda: animation.frame_payload("wind", hour, version=request.args.get("data")))
+    return _wind_response(lambda: wind.forecast(animation.nearest_forecast_hour(hour)))
+
+
+@blueprint.get("/api/great-lakes/wind-value")
+def wind_point():
+    hour, coordinates = _forecast_coordinates()
+    return _wind_response(lambda: wind.point(hour, *coordinates))

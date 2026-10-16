@@ -11,9 +11,18 @@ const {
   thermoclineDisplayValue
 } = await import("../static/js/trip-fishing-conditions.js");
 
-const locations = [{ id: "erie", name: "Lake Erie" }, { id: "claire", name: "Lake St. Clair" }];
+const locations = [
+  { id: "erie", name: "Lake Erie", coordinates: { latitude: 41.651, longitude: -82.822 } },
+  { id: "ontario", name: "Lake Ontario", coordinates: { latitude: 43.7, longitude: -77.9 } },
+  { id: "claire", name: "Lake St. Clair", coordinates: { latitude: 42.4, longitude: -82.6 } },
+  { id: "override", name: "Inland", greatLakesOverride: true },
+  { id: "excluded", name: "Lake Erie", greatLakesOverride: false, coordinates: { latitude: 42.2, longitude: -81.7 } }
+];
 assert.equal(isGreatLakesFishingTrip({ locationId: "erie", method: "Trolling" }, locations), true);
-assert.equal(isGreatLakesFishingTrip({ location: "Lake Michigan", method: "jigging" }), true);
+assert.equal(isGreatLakesFishingTrip({ locationId: "ontario", method: "jigging" }, locations), true);
+assert.equal(isGreatLakesFishingTrip({ location: "Lake Michigan", method: "jigging" }), false);
+assert.equal(isGreatLakesFishingTrip({ locationId: "override", method: "jigging" }, locations), true);
+assert.equal(isGreatLakesFishingTrip({ locationId: "excluded", method: "jigging" }, locations), false);
 assert.equal(isGreatLakesFishingTrip({ locationId: "erie", method: "casting" }, locations), false);
 assert.equal(isGreatLakesFishingTrip({ locationId: "claire", method: "trolling" }, locations), false);
 assert.equal(isGreatLakesFishingTrip({ location: "Lake St. Clair", method: "trolling" }), false);

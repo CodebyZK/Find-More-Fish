@@ -157,8 +157,8 @@ assert.equal(shown.temperatureMetadata.forecastHour, 4);
 play.click();
 await waitFor(() => shown.temperatureMetadata.forecastHour === 0, "temperature playback to loop with currents");
 animation.stopGreatLakesAnimation();
-// Clear thermocline cells must reveal the map gradually, not keep the old
-// colour until frame cleanup. Exercise both forward playback and the loop.
+// Legacy colour-only thermocline frames switch at constant opacity rather
+// than dipping in brightness. Modern value rasters use the canvas morph.
 const thermoclineFrames = frames.slice(0, 2).map((frame) => ({ ...frame, url: `${frame.url}&kind=thermocline` }));
 window.noaaGreatLakesApi.animation = async () => ({ ready: true, frames: thermoclineFrames });
 window.noaaGreatLakesApi.animationFrame = async () => ({
@@ -172,22 +172,43 @@ animation.syncTimelineControls();
 const thermoclineImages = animation.animationState.overlays.map(([overlay]) => overlay.getElement());
 const opacity = (index) => Number(thermoclineImages[index].style.opacity);
 play.click();
-await waitFor(() => opacity(0) < 0.8 && opacity(0) > 0.2, "outgoing thermocline colours to fade during playback");
-assert.ok(opacity(1) > 0.2 && opacity(1) < 0.8, "incoming colours blend at the same time");
-assert.ok(Math.abs(opacity(0) + opacity(1) - 1) < 0.05);
+assert.ok(thermoclineImages.every((image) => ["0", "1"].includes(image.style.opacity)));
 await waitFor(() => animation.animationState.index === 1, "the second thermocline frame");
-await waitFor(() => opacity(1) < 0.8 && opacity(1) > 0.2, "outgoing thermocline colours to fade on the loop");
-assert.ok(opacity(0) > 0.2 && opacity(0) < 0.8);
+assert.ok(thermoclineImages.every((image) => ["0", "1"].includes(image.style.opacity)));
 play.click();
 assert.deepEqual(thermoclineImages.map((image) => image.style.opacity), ["0", "1"]);
 slider.value = "0";
 slider.dispatchEvent(new Event("input", { bubbles: true }));
-await waitFor(() => opacity(1) < 0.8 && opacity(1) > 0.2, "thermocline scrubbing to fade the old frame");
-await waitFor(() => opacity(0) === 1 && opacity(1) === 0, "thermocline scrubbing to settle");
+assert.equal(opacity(0), 1);
+assert.equal(opacity(1), 0);
 window.matchMedia = () => ({ matches: true });
 slider.value = "1";
 slider.dispatchEvent(new Event("input", { bubbles: true }));
 assert.deepEqual(thermoclineImages.map((image) => image.style.opacity), ["0", "1"]);
+animation.stopGreatLakesAnimation();
+
+// Wind shares the 48-hour timeline and swaps its prepared vector field without
+// attempting to create raster overlays.
+const windFrames = frames.slice(0, 2).map((frame) => ({ ...frame, url: `${frame.url}&kind=wind` }));
+window.noaaGreatLakesApi.animation = async ({ layer }) => {
+  assert.equal(layer, "wind");
+  return { ready: true, frames: windFrames };
+};
+window.noaaGreatLakesApi.animationFrame = async ({ url }) => {
+  const frame = windFrames.find((item) => item.url === url);
+  return { points: [{ latitude: 43, longitude: -78, u: 4, v: -2 }], metadata: { available: true, validTime: frame.validTime } };
+};
+document.querySelector("[data-gl-layer]").value = "wind";
+animation.animationState.active = true;
+assert.equal(await animation.loadGreatLakesAnimation(map, { layer: "wind", depth: "0", isCurrent: () => true }), true);
+animation.syncTimelineControls();
+assert.equal(document.querySelectorAll(".great-lakes-animation-frame").length, 0);
+assert.equal(slider.max, "1");
+assert.equal(shown.layer, "wind");
+slider.value = "1";
+slider.dispatchEvent(new Event("input", { bubbles: true }));
+assert.equal(conditions.greatLakesForecastHour(), "1");
+assert.equal(shown.metadata.validTime, windFrames[1].validTime);
 animation.stopGreatLakesAnimation();
 map.remove();
 process.exit(0);

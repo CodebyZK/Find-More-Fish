@@ -84,7 +84,7 @@ test("currents animate temperature backgrounds and temporarily hide stations", a
   expect(errors).toEqual([]);
 });
 
-test("thermocline clears outgoing colours smoothly during playback and scrubbing", async ({ page }) => {
+test("legacy thermocline colour frames keep full brightness during playback and scrubbing", async ({ page }) => {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.addInitScript(() => localStorage.setItem("glc.AnimationSpeed", "slow"));
@@ -112,13 +112,12 @@ test("thermocline clears outgoing colours smoothly during playback and scrubbing
   await page.locator("[data-gl-play]").click();
   const images = page.locator(".great-lakes-animation-frame");
   await expect(images).toHaveCount(2);
-  const blending = () => images.evaluateAll(xs => xs.every(x => +x.style.opacity > 0.2 && +x.style.opacity < 0.8));
-  await expect.poll(blending).toBe(true);
-  const opacities = await images.evaluateAll(xs => xs.map(x => +x.style.opacity));
-  expect(Math.abs(opacities[0] + opacities[1] - 1)).toBeLessThan(0.05);
+  const fullBrightness = () => images.evaluateAll(xs => xs.every(x => [0, 1].includes(+x.style.opacity)) && xs.reduce((sum, x) => sum + +x.style.opacity, 0) === 1);
+  await expect.poll(fullBrightness).toBe(true);
+  await expect.poll(() => page.locator("[data-gl-frame]").inputValue()).not.toBe("0");
   await page.locator("[data-gl-play]").click();
   await page.locator("[data-gl-frame]").evaluate(x => { x.value = "1"; x.dispatchEvent(new Event("input", { bubbles: true })); });
-  await expect.poll(blending).toBe(true);
+  await expect.poll(fullBrightness).toBe(true);
   await expect(images.nth(0)).toHaveCSS("opacity", "0");
   await expect(images.nth(1)).toHaveCSS("opacity", "1");
   expect(errors).toEqual([]);

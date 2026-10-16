@@ -1,8 +1,13 @@
 const { expect, test } = require("@playwright/test");
+const { fillDate, freshLogbook, resetLogbook, seededLocation, stubExternalApis } = require("./helpers");
 
 async function openCastingCatch(page) {
+  await resetLogbook(page, await freshLogbook(page, { locations: [seededLocation()] }));
+  await stubExternalApis(page);
   await page.goto("/trips");
   await page.getByRole("button", { name: "New Trip", exact: true }).click();
+  await fillDate(page, "#tripDate", "10/05/2026");
+  await page.locator("#tripLocation").selectOption("loc-lake-erie");
   await page.locator("#method").selectOption({ label: "Casting" });
   await page.getByRole("button", { name: "Add Catch", exact: true }).click();
   return page.locator("#catchRows .catch-row").last();

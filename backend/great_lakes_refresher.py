@@ -12,10 +12,10 @@ moves to the next hourly frame of the same run, so the refresher:
   every depth, whenever a run is published or the current hour changes, and
   precomputes their thermoclines,
 * draws the map layers (all lakes, full detail) for each forecast choice, and
-  for "Now" at every depth level down to about 100 ft, and stores them on
+  for "Now" at every depth level down to 1,040 ft, and stores them on
   disk, so opening, panning, or changing depth does not wait for drawing,
 * downloads the forecast animation's frames (every 3 hours on the UTC clock
-  out to 48 h; the same files all through a run) and draws each layer's
+  out to 120 h; the same files all through a run) and draws each layer's
   surface animation on its shared colour scale,
 * downloads the static model meshes, water masks, and depth grids once,
 * checks the hourly NOAA wave model (GLWU) every 5 minutes and downloads and
@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 
 from . import great_lakes_cache as cache
 from . import great_lakes_service as service
+from . import great_lakes_target_temperature as target_temperature
 from . import great_lakes_upwelling as upwelling
 from . import great_lakes_waves as waves
 
@@ -59,8 +60,8 @@ STATUS_FILE = "status.json"
 # The browser always requests every lake at this resolution (see
 # GREAT_LAKES_LAYER_RESOLUTION in great-lakes-conditions.js).
 MAP_RESOLUTION = 512
-# "Now" is pre-drawn at every model depth level down to about 100 ft.
-PREDRAW_MAX_DEPTH_METERS = 30.0
+# "Now" is pre-drawn at every model depth level reachable from the map slider.
+PREDRAW_MAX_DEPTH_METERS = service.MAX_DEPTH_METERS
 # Forecast animations kept drawn at the surface (waves are kept with the wave model).
 ANIMATED_MODEL_LAYERS = ("temperature", "thermocline", "currents", "upwelling")
 # The wave model runs hourly, so its newest cycle is checked this often.
@@ -148,7 +149,7 @@ def data_status(models: tuple[str, ...] = service.MODELS, now: float | None = No
     shared = cache.read_json(cache.path_for(STATUS_FILE)) or {}
     # The drawing versions are part of the key browsers and apps cache layers
     # under, so a change to how layers are drawn reaches them immediately.
-    drawing = f"draw:{service.TEMPERATURE_RASTER_RENDER_VERSION}.{service.THERMOCLINE_RASTER_RENDER_VERSION}.{service.CURRENT_RENDER_VERSION}.{upwelling.UPWELLING_RENDER_VERSION}"
+    drawing = f"draw:{service.TEMPERATURE_RASTER_RENDER_VERSION}.{service.THERMOCLINE_RASTER_RENDER_VERSION}.{service.CURRENT_RENDER_VERSION}.{upwelling.UPWELLING_RENDER_VERSION}.{target_temperature.TARGET_TEMPERATURE_RENDER_VERSION}"
     version = "|".join([*(f"{model}:{item.get('run')}:{item.get('nowForecastHour')}" for model, item in result.items()), drawing])
     # A partial cycle can gain forecast/animation hours without changing its
     # "Now" file. Clients and manifests must also invalidate for those changes.
@@ -266,17 +267,26 @@ class GreatLakesRefresher:
 
         # Waves first: they take seconds, while a GLOFS hour can take minutes,
         # and both move to the next hour around the same time.
-        self.refresh_waves(check_source=check_sources)
+        render_attempted = self.refresh_waves(check_source=check_sources)
         now = self.clock()
         if check_sources:
             self.check_runs()
         runs = service.discovered_runs()
+        bathymetry_warmed = True
+        if not self.static_warmed:
+            bathymetry_warmed = all(
+                [self._task(f"{model} bathymetry", lambda model=model: service._bathymetry_grid(model)) for model in service.MODELS]
+            )
         signature = _forecast_signature(runs, now)
+        wave_signature = self._current_wave_signature(now)
         if signature != self.warmed_signature and now >= self.warm_retry_at:
+            self._start_render_timer(signature, wave_signature, now, restart=True)
+            render_attempted = True
             ok = True
             # "Now" first, so it is ready while the forecasts are prepared;
             # then the forecast choices; then the remaining animation frames.
-            animation_only = [offset for offset in service.animation_offsets(now) if offset not in service.FORECAST_OFFSETS]
+            animation_only = [offset for offset in animation.offsets_for("temperature", now, runs=runs)
+                              if offset not in service.FORECAST_OFFSETS]
             for offset in service.FORECAST_OFFSETS:
                 if self._stop.is_set():
                     return
@@ -289,6 +299,7 @@ class GreatLakesRefresher:
             ok = self._task("surface animations", self.prepare_animations) and ok
             if self._stop.is_set():
                 return
+            self._finish_render_timer(self.clock())
             if ok:
                 self.warmed_signature = signature
                 with self._state_lock:
@@ -301,17 +312,65 @@ class GreatLakesRefresher:
                 self._task("old animation scales", animation.prune)
             else:
                 self.warm_retry_at = now + RETRY_SECONDS
+        elif render_attempted:
+            self._finish_render_timer(self.clock())
         if not self.static_warmed:
             self.static_warmed = all(
                 [self._task(f"{model} {kind} mesh", lambda model=model, kind=kind: service._model_mesh(model, kind))
                  for model in service.MODELS for kind in service.MODEL_POINT_KINDS]
-                + [self._task(f"{model} bathymetry", lambda model=model: service._bathymetry_grid(model)) for model in service.MODELS]
-            )
+            ) and bathymetry_warmed
         with self._state_lock:
             self.state["updatedAt"] = _iso(self.clock())
         self._save_state()
 
-    def refresh_waves(self, *, check_source: bool = True) -> None:
+    @staticmethod
+    def _current_wave_signature(now: float) -> tuple | None:
+        run = waves.known_run()
+        if not run.get("id"):
+            return None
+        return run["id"], waves.select_wave_hour(run, 0, now)
+
+    def _start_render_timer(self, model_signature: tuple, wave_signature: tuple | None,
+                            now: float, *, restart: bool = False) -> None:
+        """Start timing a new pre-generation attempt for this render set."""
+        target = hashlib.sha1(repr((model_signature, wave_signature)).encode()).hexdigest()
+        with self._state_lock:
+            current_target = self.state.get("renderCycleTarget")
+            if self.state.get("renderCycleState") == "running":
+                if current_target == target:
+                    return
+                # Source discovery can advance while one batch is in progress;
+                # keep timing that batch from its original start.
+                self.state["renderCycleTarget"] = target
+                save = True
+            elif current_target == target and not restart:
+                return
+            else:
+                save = True
+                self.state.update({
+                    "renderCycleTarget": target,
+                    "renderCycleState": "running",
+                    "renderCycleStartedEpoch": now,
+                    "renderCycleStartedAt": _iso(now),
+                    "renderCycleFinishedAt": None,
+                })
+        if save:
+            self._save_state()
+
+    def _finish_render_timer(self, now: float) -> None:
+        """Record the attempt duration even when individual views failed."""
+        with self._state_lock:
+            started = self.state.get("renderCycleStartedEpoch")
+            if self.state.get("renderCycleState") != "running" or not isinstance(started, (int, float)):
+                return
+            self.state.update({
+                "renderCycleState": "finished",
+                "renderCycleFinishedAt": _iso(now),
+                "renderCycleDurationSeconds": max(0, round(now - started)),
+            })
+        self._save_state()
+
+    def refresh_waves(self, *, check_source: bool = True) -> bool:
         """Keep the hourly wave model current: every forecast choice and animation frame downloaded and drawn."""
         from . import great_lakes_animation as animation  # Imports this module.
 
@@ -320,11 +379,14 @@ class GreatLakesRefresher:
             self.check_wave_run()
         run = waves.known_run()
         if not run.get("id"):
-            return
+            return False
         signature = (run["id"], waves.select_wave_hour(run, 0, now))
         if signature == self.waves_signature or now < self.wave_retry_at:
-            return
-        if self._task("wave forecasts", lambda: waves.warm_wave_hours(service.served_offsets(now), now)):
+            return False
+        model_signature = _forecast_signature(service.discovered_runs(), now)
+        self._start_render_timer(model_signature, signature, now, restart=True)
+        wave_offsets = tuple(hour for hour in service.served_offsets(now) if hour <= waves.GLWU_FINAL_HOUR)
+        if self._task("wave forecasts", lambda: waves.warm_wave_hours(wave_offsets, now)):
             drawn = [self._task(f"pre-drawn {offset} h waves", lambda offset=offset: _require_all_lakes(waves.wave_rasters(offset, MAP_RESOLUTION, service.MODELS)))
                      for offset in service.FORECAST_OFFSETS]
             animation_ready = self._task("waves animation", lambda: animation.prepare("waves"))
@@ -333,8 +395,11 @@ class GreatLakesRefresher:
                 with self._state_lock:
                     self.state["lastWaveWarm"] = _iso(now)
                 self.wave_retry_at = 0.0
-                return
-        self.wave_retry_at = now + RETRY_SECONDS
+            else:
+                self.wave_retry_at = now + RETRY_SECONDS
+        else:
+            self.wave_retry_at = now + RETRY_SECONDS
+        return True
 
     def prune_model_cache(self, runs: dict[str, dict], now: float) -> None:
         for model, published in runs.items():
@@ -363,12 +428,14 @@ class GreatLakesRefresher:
 
         The map always shows every lake at full detail, so one drawing per
         layer serves any pan or zoom. "Now" is also drawn at each depth level
-        down to PREDRAW_MAX_DEPTH_METERS; other times are drawn at the surface.
+        down to the slider's 1,040 ft limit; other times are drawn at the surface.
         """
         models = service.MODELS
         depths = [0.0]
         if offset == 0:
-            depths = [depth for depth in service.depth_levels(models) if depth <= PREDRAW_MAX_DEPTH_METERS] or [0.0]
+            levels = service.depth_levels(models)
+            maximum_drawn_depth = min(levels, key=lambda depth: abs(depth - PREDRAW_MAX_DEPTH_METERS)) if levels else PREDRAW_MAX_DEPTH_METERS
+            depths = [depth for depth in levels if depth <= maximum_drawn_depth] or [0.0]
         tasks = [(layer, offset, depth) for depth in depths for layer in ("temperature", "currents")]
         tasks.extend((layer, offset, 0.0) for layer in ("thermocline", "upwelling"))
         self._draw_tasks(tasks, f"{offset} h maps")

@@ -63,7 +63,7 @@ def test_index_prepares_frames_on_one_scale_then_reuses_it(monkeypatch) -> None:
     assert [call[3] for call in calls] == [None, None, None, (10.0, 15.5), (10.0, 15.5), (10.0, 15.5)]
     assert index["scale"] == {"min": 10.0, "max": 15.5}
     assert [frame["forecastHour"] for frame in index["frames"]] == [0, 2, 5]
-    assert index["frames"][1] == {"forecastHour": 2, "validTime": "t+2", "available": True,
+    assert index["frames"][1] == {"forecastHour": 2, "validTime": "t+2", "available": True, "stale": False,
                                   "url": "/api/great-lakes/temperature-raster?forecastHour=2&depth=4&resolution=512&models=LSOFS%2CLMHOFS%2CLEOFS%2CLOOFS&animation=1&data=v1"}
     assert index["frames"][2]["available"] is False
 
@@ -93,7 +93,7 @@ def test_index_reports_progress_and_errors(monkeypatch) -> None:
     assert waiting["ready"] is False and waiting["progress"]["total"] == 4 and "frames" not in waiting
     release.set()
     done = animation.index("waves", wait_seconds=5)
-    assert done["ready"] is True and done["depthMeters"] is None and done["scale"] == {"min": 0.0, "max": 6.0}
+    assert done["ready"] is True and done["depthMeters"] is None and done["scale"] == {"min": 0.0, "max": 4.0}
 
     monkeypatch.setattr(refresher, "data_status", lambda models=service.MODELS: {"version": "v3", "wavesVersion": "w3"})
     monkeypatch.setattr(animation, "layer_payload", lambda layer, forecast_hour, depth=0.0, scale=None: {"rasters": [], "metadata": {"models": []}})
@@ -124,7 +124,7 @@ def test_animation_routes(monkeypatch, tmp_path) -> None:
     assert client.get("/api/great-lakes/temperature-raster?forecastHour=7&depth=1.5&animation=1").status_code == 200
     assert client.get("/api/great-lakes/currents?forecastHour=3&depth=900&animation=1").status_code == 200
     assert client.get("/api/great-lakes/waves-raster?forecastHour=soon&animation=1").status_code == 400
-    assert calls == [("temperature", 8, 1.5, (4.0, 18.5)), ("currents", 2, 500.0, (4.0, 18.5))]
+    assert calls == [("temperature", 8, 1.5, (4.0, 18.5)), ("currents", 2, service.MAX_DEPTH_METERS, (4.0, 18.5))]
 
     states = iter([{"ready": False, "progress": {"done": 1, "total": 8}}, {"ready": True, "frames": [], "scale": {"min": 0, "max": 1}}, {"ready": False, "error": "down"}])
     monkeypatch.setattr(animation, "index", lambda layer, depth=0.0: next(states))
@@ -166,3 +166,21 @@ def test_stale_animation_progress_allows_retry(monkeypatch) -> None:
         waiting = animation.index("waves", wait_seconds=0)
     executor.submit.assert_called_once()
     assert waiting["ready"] is False and waiting["progress"] == {"done": 0, "total": 4}
+
+
+def test_stale_prepared_frames_are_redrawn(monkeypatch) -> None:
+    offsets = (0, 3)
+    monkeypatch.setattr(service, "animation_offsets", lambda now=None: offsets)
+    monkeypatch.setattr(refresher, "data_status", lambda models=service.MODELS: {"version": "v-stale-refresh", "wavesVersion": "w-stale-refresh"})
+    key = animation._key("waves", None, offsets, "w-stale-refresh")
+    animation._remember_prepared(key, {"scale": {"min": 0.0, "max": 4.0}, "frames": [{"stale": True}]})
+    rebuilt = {"scale": {"min": 0.0, "max": 4.0}, "frames": [{"stale": False}]}
+    calls = []
+
+    def prepare(layer, depth, requested_offsets, version, job, progress_key):
+        calls.append((layer, depth, requested_offsets, version))
+        return rebuilt
+
+    monkeypatch.setattr(animation, "_prepare", prepare)
+    assert animation.prepare("waves") == rebuilt
+    assert calls == [("waves", None, offsets, "w-stale-refresh")]

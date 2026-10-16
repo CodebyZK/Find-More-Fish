@@ -9,7 +9,7 @@ import { intentLabel, tripIntent, tripRatingLabel, tripRatingValue } from "./tri
 import { flasherName, lureName } from "./gear-core.js";
 import { resolveTripLineRecord, setupLineSideLabel } from "./trolling-spread.js";
 import { catchRecords, filterGearRecordsByStats, filterRecordsByStats, filteredCatchRecordsForTrip, gearUseRecords, lostFishRecords, recordMatchesStatsFilters, scopedCatchRate, scopedTripFish, scopedTrips, tripMonthName } from "./stats-scope.js";
-import { airTempBucket, catchComparisonRows, cloudCoverBucket, fishShareRows, lureSpreadRows, makePerformanceItems, performanceRows, pressureBucket, setupLineMinutes, summarizeBestSpeedByDirection, summarizeBiteWindows, summarizeBy, summarizeCatchMeasurement, summarizeDistanceBehind, summarizeDownriggerCatchPositions, summarizeEffortWithCatches, summarizeLureSpreadContext, summarizeProbeProfiles, summarizeShakers, summarizeSpeedDelta, summarizeThermoclinePosition, summarizeTripPerformance, summarizeWeatherBuckets, sunshineBucket, tripPerformanceRows, weatherNumber, weatherText, windSpeedBucket } from "./stats-performance.js";
+import { airTempBucket, catchComparisonRows, cloudCoverBucket, fishShareRows, lureSpreadRows, makePerformanceItems, performanceRows, pressureBucket, setupLineMinutes, summarizeBestSpeedByDirection, summarizeBiteWindows, summarizeBy, summarizeDistanceBehind, summarizeDownriggerCatchPositions, summarizeEffortWithCatches, summarizeFishingSpeed, summarizeLureSpreadContext, summarizeProbeProfiles, summarizeShakers, summarizeSpeedDelta, summarizeThermoclinePosition, summarizeTripPerformance, summarizeWeatherBuckets, sunshineBucket, tripPerformanceRows, weatherNumber, weatherText, windSpeedBucket } from "./stats-performance.js";
 import { COMPARISON_DIMENSIONS, COMPARISON_METRICS, comparisonDimension, comparisonHeaders, comparisonHighlights, comparisonMatrix, comparisonNote, comparisonRows, summarizeComparison } from "./stats-comparisons.js";
 import { StatsActivityHeatmap } from "./stats-heatmap.js";
 import { renderStatsMessage, renderStatsTable } from "./stats-rendering.js";
@@ -26,7 +26,7 @@ export function renderAdvancedStats() {
   const fish = records.reduce((sum, record) => sum + fishCount(record), 0);
   const lostFish = lostRecords.length;
   const fishInteractions = fish + lostFish;
-  const releasedFish = records.filter((record) => record.released).length;
+  const releasedFish = records.filter((record) => record.released).reduce((sum, record) => sum + fishCount(record), 0);
   const keptFish = Math.max(0, fish - releasedFish);
   const hours = trips.reduce((sum, trip) => sum + tripHours(trip), 0);
   const lureMinutes = gearRecords.reduce((sum, record) => sum + (record.lureId ? number(record.lureMinutes) : 0), 0);
@@ -173,15 +173,15 @@ export function renderAdvancedStats() {
     renderStatsTable(els.downriggerStatsTable, ["Position / Method", "Fish", "Lost", "Strikes", "Landing %", "Trips", "Fish / trip", "Fish Share"], catchComparisonRows(downriggerItems, "Position / Method"));
     renderStatsTable(els.fowRangeStatsTable, ["FOW Range", "Fish", "Trips", "Fish Share"], fishShareRows(fowRangeItems));
 
-    const gpsSpeedRows = summarizeCatchMeasurement(trollingCatches, (record) => record.gpsSpeed, { step: 0.5, suffix: " mph", min: 0.1, max: 15 });
-    const ballSpeedRows = summarizeCatchMeasurement(trollingCatches, (record) => record.ballSpeed, { step: 0.5, suffix: " mph", min: 0.1, max: 15 });
+    const gpsSpeedRows = summarizeFishingSpeed(trollingCatches, "gpsSpeed");
+    const ballSpeedRows = summarizeFishingSpeed(trollingCatches, "ballSpeed");
     const speedDeltaRows = summarizeSpeedDelta(trollingCatches);
     const distanceRows = summarizeDistanceBehind(trollingGear, trollingCatches);
     const probeRows = summarizeProbeProfiles(trips);
     const thermoclineRows = summarizeThermoclinePosition(trollingCatches);
-    renderStatsTable(els.gpsSpeedStatsTable, ["GPS Speed", "Fish", "Trips", "Avg Speed", "Avg Length"], gpsSpeedRows);
-    renderStatsTable(els.ballSpeedStatsTable, ["Ball Speed", "Fish", "Trips", "Avg Speed", "Avg Length"], ballSpeedRows);
-    renderStatsTable(els.speedDeltaStatsTable, ["Relationship", "Fish", "Trips", "Avg Delta", "Range"], speedDeltaRows);
+    renderStatsTable(els.gpsSpeedStatsTable, ["GPS Speed", "Fish", "Trips", `Avg Speed (${unitSymbol("speed")})`, "Avg Length"], gpsSpeedRows);
+    renderStatsTable(els.ballSpeedStatsTable, ["Ball Speed", "Fish", "Trips", `Avg Speed (${unitSymbol("speed")})`, "Avg Length"], ballSpeedRows);
+    renderStatsTable(els.speedDeltaStatsTable, ["Relationship", "Fish", "Trips", `Avg Delta (${unitSymbol("speed")})`, `Range (${unitSymbol("speed")})`], speedDeltaRows);
     renderStatsTable(els.shakerStatsTable, ["Catch Class", "Fish", "Rate"], summarizeShakers(trollingCatches));
     renderStatsTable(els.distanceBehindStatsTable, ["Distance", "Fish", "Hours", "Fish / hr", "Trips"], distanceRows);
     renderStatsTable(els.probeTemperatureStatsTable, [`Depth (${unitSymbol("depth")})`, "Avg Temp", "Min Temp", "Max Temp", "Trips"], probeRows);

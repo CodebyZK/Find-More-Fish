@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -175,3 +176,44 @@ def test_cached_read_notices_database_replaced_at_same_revision(tmp_path) -> Non
     snapshot = server_view.read()
     assert snapshot.revision == '"1"'
     assert [item["id"] for item in snapshot.document["trips"]] == ["trip-1"]
+
+
+def test_failed_replacement_restores_backup_and_prior_promotions(tmp_path, monkeypatch) -> None:
+    original = tmp_path / "original.jpg"
+    original.write_bytes(b"original media")
+    earlier = tmp_path / "earlier.jpg"
+    replace = Path.replace
+
+    def fail_replacement(source, target):
+        if source.parent.name == "staged" and target == original:
+            raise OSError("simulated promotion failure")
+        return replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_replacement)
+    with pytest.raises(OSError, match="promotion failure"):
+        with MediaTransaction(tmp_path) as transaction:
+            transaction.stage_bytes(earlier, b"earlier upload")
+            transaction.stage_bytes(original, b"replacement", overwrite=True)
+            transaction.promote()
+
+    assert original.read_bytes() == b"original media"
+    assert not earlier.exists()
+
+
+def test_failed_copy_removes_partial_target(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "source.jpg"
+    source.write_bytes(b"original media")
+    target = tmp_path / "target.jpg"
+
+    def partial_copy(source, destination):
+        destination.write_bytes(b"partial")
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr("backend.storage.media_transaction.shutil.copy2", partial_copy)
+    with pytest.raises(OSError, match="copy failure"):
+        with MediaTransaction(tmp_path) as transaction:
+            transaction.copy(source, target)
+            transaction.promote()
+
+    assert source.read_bytes() == b"original media"
+    assert not target.exists()

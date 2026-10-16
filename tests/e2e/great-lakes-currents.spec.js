@@ -41,6 +41,8 @@ test("map depth popup opens the current profile on request", async ({ page }) =>
   await page.locator(".map-layers-menu > summary").click();
   await expect(page.locator("[data-gl-lake]")).toHaveCount(0);
   await page.locator("[data-gl-layer]").selectOption("currents");
+  await page.locator("[data-gl-density]").selectOption("very-high");
+  await expect(page.locator("[data-gl-density]")).toHaveValue("very-high");
   await expect(page.locator("[data-gl-status]")).toContainText("Showing the NOAA forecast");
   await page.locator(".map-layers-menu > summary").click();
   await page.locator("#fishMap").click({ position: { x: 220, y: 210 } });

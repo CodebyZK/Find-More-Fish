@@ -16,6 +16,9 @@ class BathymetryServiceTests(unittest.TestCase):
         local = patch.object(bathymetry_service, "nearest_local_contour", return_value=None)
         local.start()
         self.addCleanup(local.stop)
+        model = patch.object(bathymetry_service, "model_depth_estimate", return_value=None)
+        model.start()
+        self.addCleanup(model.stop)
 
     def test_local_contour_precedes_remote_providers(self) -> None:
         with (

@@ -613,6 +613,9 @@ body:has(#tripSummaryDialog[open]) { overflow: hidden; }
 .great-lakes-control label { margin-top: 5px; font-weight: 700; }
 .great-lakes-control select { width: 100%; margin-top: 2px; padding: 8px 36px 8px 10px; font: inherit; }
 .great-lakes-control output { float: right; color: var(--muted); font-weight: 500; }.great-lakes-control input[type="range"] { display: block; width: 100%; box-sizing: border-box; margin: 5px 0 0; padding: 0; accent-color: var(--green); }
+.great-lakes-control .gl-forecast-slider { display: flex; flex-direction: column; align-items: stretch; gap: 4px; margin-top: 5px; }
+.great-lakes-control .gl-forecast-slider input[type="range"] { min-width: 0; margin-top: 5px; }
+.great-lakes-control .gl-forecast-time { display: block; float: none; color: var(--text); font-size: 12px; font-weight: 400; line-height: 1.35; overflow-wrap: anywhere; text-align: left; white-space: normal; }
 /* Forecast animation: play/pause, a slider over the frames, and the frame time. */
 .great-lakes-timeline { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
 .great-lakes-play { display: grid; flex: none; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--chip-line); border-radius: 50%; background: var(--active-bg); color: var(--active-text); cursor: pointer; }
@@ -727,7 +730,7 @@ body.great-lakes-layer-none :is(.great-lakes-temperature-raster, .great-lakes-th
 .great-lakes-points-options legend { padding: 0; font-size: 12px; font-weight: 800; color: var(--muted); }
 .great-lakes-points-options label { display: flex; align-items: center; gap: 7px; margin-top: 6px; font-weight: 700; cursor: pointer; }
 .great-lakes-points-options input[type="checkbox"] { width: 16px; height: 16px; flex: none; margin: 0; padding: 0; accent-color: var(--green); }
-.great-lakes-control .great-lakes-points-options p { min-height: 0; margin: 6px 0 0; white-space: pre-line; font-size: 11px; }
+.great-lakes-points-options p { min-height: 0; margin: 6px 0 0; white-space: pre-line; font-size: 11px; }
 .great-lakes-station-marker { background: transparent; border: 0; }
 .great-lakes-station { position: absolute; top: 0; left: 0; display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 3px; border: 1px solid rgba(6, 16, 34, .28); border-radius: 999px; background: rgba(255, 255, 255, .96); color: #0b1730; font: 800 11px/1 Roboto, sans-serif; white-space: nowrap; box-shadow: 0 1px 4px rgba(6, 16, 34, .35); transform: translate(-10px, -50%); cursor: pointer; }
 .great-lakes-station-dot { width: 12px; height: 12px; flex: none; border: 2px solid #fff; border-radius: 50%; background: var(--station-color); box-shadow: 0 0 0 1px rgba(6, 16, 34, .45); }

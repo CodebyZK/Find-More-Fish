@@ -38,3 +38,4 @@ cloud/worker/wrangler.generated.json
 # Generated frontend build output (npm run build / scripts/build-standalone.py).
 static/dist/
 standalone.html
+static/data/depth-indexes/

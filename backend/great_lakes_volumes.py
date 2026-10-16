@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import threading
 from array import array
+from contextlib import nullcontext
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +28,6 @@ VOLUME_FORMAT = 1
 
 _memory: OrderedDict[tuple, "Volume"] = OrderedDict()
 _memory_lock = threading.Lock()
-_fetch_locks: dict[tuple, threading.Lock] = {}
 _prefetching: set[tuple] = set()
 _static_grids: dict[tuple, tuple[list[float], list[float], array]] = {}
 
@@ -173,12 +173,15 @@ def _load(kind: str, model: str, run_id: str, hour: int, base_url: str, ny: int,
         if volume is not None:
             _memory.move_to_end(key)
             return volume
-        lock = _fetch_locks.setdefault(key, threading.Lock())
-    with lock:
+    target = _disk_path(kind, model, run_id, hour, y_stride, x_stride, level)
+    volume = _from_record(kind, model, run_id, hour, cache.read_record(target))
+    if volume is None and not download:
+        return None
+    with cache.resource_lock("volumes", key) if volume is None else nullcontext():
         with _memory_lock:
-            volume = _memory.get(key)
+            volume = _memory.get(key, volume)
         if volume is None:
-            volume = _from_record(kind, model, run_id, hour, cache.read_record(_disk_path(kind, model, run_id, hour, y_stride, x_stride, level)))
+            volume = _from_record(kind, model, run_id, hour, cache.read_record(target))
         if volume is None and download:
             volume = _download(kind, model, run_id, hour, base_url, ny, nx, depths, variable_names, y_stride, x_stride, level)
         if volume is not None:
@@ -187,7 +190,6 @@ def _load(kind: str, model: str, run_id: str, hour: int, base_url: str, ny: int,
                 _memory.move_to_end(key)
                 while len(_memory) > MEMORY_VOLUMES:
                     _memory.popitem(last=False)
-                _fetch_locks.pop(key, None)
         return volume
 
 

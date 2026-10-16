@@ -3,17 +3,20 @@ import { installBrowserEnv } from "./helpers/browser-env.mjs";
 
 installBrowserEnv();
 const { setState } = await import("../static/js/app-state.js");
-const { greatLakesConditionsHtml, upwellingReading, upwellingStrengthLabel } = await import("../static/js/great-lakes-conditions.js");
+const { greatLakesConditionsHtml, upwellingReading } = await import("../static/js/great-lakes-conditions.js");
 const { fitRange } = await import("../static/js/great-lakes-palette.js");
 const { setup: setupApi } = await import("../static/js/noaa-api.js");
 setState({ settings: { units: { depth: "ft", waterTemperature: "F" } } });
 
 assert.match(String(greatLakesConditionsHtml()), /<option value="upwelling">Upwelling &amp; downwelling<\/option>/);
-assert.equal(upwellingStrengthLabel(5), "Moderate");
 assert.deepEqual(fitRange([1, 2, 3], 1, 0, "upwelling"), [-8, 8]);
-const reading = upwellingReading({ kind: "upwelling", strengthF: 7, surfaceC: 12, surroundingC: 14, change24hC: null, thermoclineShiftMeters: null, openWater: true });
+const reading = upwellingReading({ kind: "upwelling", evidenceIndex: 7, confidence: "supported", assessment: "assessed", surfaceC: 12, surroundingC: 14, change24hC: null, relativeChange24hC: -1, thermoclineShiftMeters: null, openWater: true });
 assert.equal(reading.label, "Upwelling");
+assert.equal(reading.value, "Likely");
 assert.equal(reading.rows[1][1], "3.6 °F colder");
+assert.equal(reading.rows[4][0], "Change relative to nearby");
+assert.equal(upwellingReading({ kind: null, assessment: "insufficient-stratification", openWater: true }).value, "Unable to assess");
+assert.equal(upwellingReading({ kind: null, assessment: "assessed", openWater: true }).value, "No clear signal");
 
 const requested = [];
 globalThis.fetch = async (url) => {

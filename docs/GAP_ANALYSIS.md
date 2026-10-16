@@ -51,7 +51,7 @@ No unused public API route was found; the current archive, media, weather, bathy
 - Recursive logbook validation, uniqueness checks, and coordinate/reference checks exist; array/text size limits and some field-level constraints remain limited.
 - SQLite writes are atomic within a transaction and revision-checked: a browser save based on an outdated revision is refused with `412` instead of overwriting newer data. There is still no automatic merge; the user reloads and repeats the edit.
 - Missing or empty SQLite storage falls back to defaults; invalid stored data raises an error rather than silently resetting it.
-- Browser localStorage is updated before server persistence; a failed PUT creates divergent copies.
+- Browser state and localStorage are updated only after successful persistence. A startup fallback without a valid server revision is read-only until reload, preventing stale cached data from replacing the server document.
 - Queue delete is idempotent but does not report “not found,” reducing auditability.
 - Upstream proxy routes have no rate limiting or caching across HTTP requests.
 - Host-managed backups and Docker deployment require host-specific verification; restore is not scripted.

@@ -42,7 +42,7 @@ function conditionsHtml(conditions = {}, record) {
   const sampleTime = current.historyTime || temperature.historyTime || conditions.time || "";
   const sampleLabel = sampleTime && Number.isFinite(Date.parse(sampleTime)) ? new Date(sampleTime).toLocaleString() : "saved sample";
   const locationLabel = location ? coordinateText(location) : "";
-  const currentNote = current.surfaceOnly ? "Only surface current is saved for samples older than 30 days." : "";
+  const currentNote = current.surfaceOnly ? "Only surface current is available for this saved sample." : "";
   const rows = [
     html`<div class="map-popup-detail"><span class="map-popup-label">Thermocline</span><span class="map-popup-value">${thermoclineValue}</span></div>`,
     html`<div class="map-popup-detail"><span class="map-popup-label">${targetDepth === null ? "Current at nearest saved depth" : "Current near catch depth"}</span><span class="map-popup-value">${currentLabel}${nearest ? ` at ${depthLabel}` : ""}</span></div>`

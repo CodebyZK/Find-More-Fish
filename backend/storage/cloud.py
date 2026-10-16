@@ -23,7 +23,7 @@ from ..backend_config import PREVIEW_DIRNAME, UPLOAD_CATEGORIES
 from ..logbook_store import validate_logbook
 from ..media_service import MediaNotFound, upload_media_type, upload_payload
 from ..shared_trip_archive import ArchiveMedia
-from .base import LogbookSnapshot, MediaInventoryIncomplete, archive_media_entries
+from .base import LogbookSnapshot, archive_media_entries
 from .local import LocalMediaStore
 
 
@@ -92,15 +92,6 @@ class CloudMediaStore:
 
     def list_orphans(self, references: set[tuple[str, str]]) -> list[dict]:
         inventory = cloud_storage.list_media()
-        if len(inventory) >= 500:
-            inventory = []
-            for category in sorted(UPLOAD_CATEGORIES - {"queue"}):
-                category_items = cloud_storage.list_media(category)
-                if len(category_items) >= 500:
-                    raise MediaInventoryIncomplete(
-                        f"Cloud {category} inventory reached its 500-item limit; the orphan scan cannot verify all uploads."
-                    )
-                inventory.extend(category_items)
         items = [
             cloud_storage.payload_from_inventory(item)
             for item in inventory

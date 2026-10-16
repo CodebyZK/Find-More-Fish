@@ -168,6 +168,7 @@ def _target(model: str) -> dict:
 
 
 def test_wave_layer_is_drawn_per_lake_with_arrows_and_point_values(monkeypatch) -> None:
+    assert waves.WAVE_COLOR_RANGE_METERS == (0.0, 4.0)
     run = {"id": "20261002t20z", "cycleEpoch": _epoch("2026-10-02T20:00:00"), "hours": list(range(49))}
     monkeypatch.setattr(waves, "discovered_wave_run", lambda refresh=False, now=None: run)
     monkeypatch.setattr(waves, "select_wave_hour", lambda run, offset, now=None: 1 + offset)
@@ -197,6 +198,24 @@ def test_wave_layer_reports_unavailable_without_a_run(monkeypatch) -> None:
 
     payload = waves.wave_rasters(0, 512, ("LEOFS",))
     assert payload["rasters"] == [] and payload["metadata"]["models"][0]["available"] is False
+
+
+def test_wave_layer_uses_a_saved_complete_frame_during_an_outage(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cache, "_cache_dir", tmp_path)
+    run = {"id": "20261002t20z", "cycleEpoch": _epoch("2026-10-02T20:00:00"), "hours": list(range(49))}
+    monkeypatch.setattr(waves, "discovered_wave_run", lambda refresh=False, now=None: run)
+    monkeypatch.setattr(waves, "select_wave_hour", lambda run, offset, now=None: 1 + offset)
+    monkeypatch.setattr(waves, "load_wave_hour", lambda run, hour: _regular_wave_hour())
+    monkeypatch.setattr(service, "model_render_grid", _target)
+
+    saved = waves.wave_rasters(0, 512, ("LEOFS",))
+    assert saved["rasters"] and saved["metadata"]["models"][0]["available"] is True
+
+    monkeypatch.setattr(waves, "discovered_wave_run", lambda refresh=False, now=None: {"error": "NOMADS unreachable"})
+    fallback = waves.wave_rasters(0, 512, ("LEOFS",))
+    assert fallback["rasters"] == saved["rasters"]
+    assert fallback["metadata"]["availability"]["state"] == "fallback"
+    assert fallback["metadata"]["models"][0]["stale"] is True
 
 
 def test_refresher_warms_and_draws_each_new_wave_hour(monkeypatch) -> None:
