@@ -14,7 +14,6 @@ import { positionLabel } from "./cards.js";
 import { addMeasureControl, isMeasuring } from "./measure.js";
 import { formatDate } from "./dashboard.js";
 import { displayFowValue } from "./trip-summary.js";
-import { bindCatchFishingConditions } from "./map-catch-fishing-conditions.js";
 
 
 export function catchMapRecordForTrip(trip, catchItem, catchIndex) {
@@ -258,7 +257,6 @@ export function addMapMarker(layerGroup, record, options = {}) {
   const popupOptions = options.autoPanPopup === false ? { autoPan: false } : undefined;
   if (shouldShowMapDirectionArrow(record, options)) {
     const marker = mapDirectionMarker(record, color, fillColor, popupHtml, popupOptions);
-    bindCatchFishingConditions(marker, record);
     return marker.addTo(layerGroup);
   }
   const marker = L.circleMarker([record.coordinates.latitude, record.coordinates.longitude], {
@@ -270,7 +268,6 @@ export function addMapMarker(layerGroup, record, options = {}) {
     bubblingMouseEvents: false,
     pane: record.type === "catch" ? "fishMarkers" : "tripMediaMarkers"
   }).bindPopup(String(popupHtml), popupOptions);
-  bindCatchFishingConditions(marker, record);
   return marker.addTo(layerGroup);
 }
 
@@ -678,7 +675,6 @@ export function mapPopupHtml(record) {
         <span class="map-popup-date">${formatDate(trip.date)}</span>
       </div>
       ${detailRows.length ? html`<div class="map-popup-details" aria-label="Map record details">${joinHtml(detailRows)}</div>` : ""}
-      ${record.type === "catch" ? html`<div class="map-catch-conditions" data-catch-fishing-conditions role="status"><span class="map-catch-conditions-heading">Saved NOAA conditions</span><small>Open the catch to load its historical water profile.</small></div>` : ""}
       <button class="map-popup-trip-link" type="button" data-view-trip="${trip.id}">View Trip</button>
     </div>
   `;

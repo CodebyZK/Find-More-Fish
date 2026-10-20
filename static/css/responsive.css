@@ -706,9 +706,19 @@
   }
 
   .map-more-filters, .map-layers-menu, .map-more-filters summary, .map-layers-menu summary { width: 100%; }
-  .map-more-filters-panel, .map-layers-menu-panel { right: auto; left: 0; width: 100%; box-sizing: border-box; }
+  .map-more-filters-panel { right: auto; left: 0; width: 100%; box-sizing: border-box; }
+  .map-layers-menu-panel { right: 0; left: auto; width: 294px; max-width: calc(100vw - 24px); }
   .fish-map {
     min-height: 360px;
+  }
+
+  #mapPanel .great-lakes-map-loading {
+    place-content: end center;
+  }
+
+  #mapPanel .great-lakes-map-loading-card {
+    width: min(320px, calc(100% - 24px));
+    max-width: none;
   }
 
   .trip-summary-shell {

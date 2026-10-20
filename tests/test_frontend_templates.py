@@ -20,7 +20,7 @@ def test_frontend_template_renders_all_partials_once(fish) -> None:
 
     assert response.status_code == 200
     markup = response.get_data(as_text=True)
-    assert '<html lang="en" data-theme="dark">' in markup
+    assert re.search(r'<html\b(?=[^>]*\blang="en")(?=[^>]*\bdata-theme="dark")[^>]*>', markup)
     assert "Fishing Logbook" in markup
     assert 'id="tripListPanel"' in markup
     assert 'id="tripDialog"' in markup

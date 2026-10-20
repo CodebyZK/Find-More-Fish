@@ -7,6 +7,7 @@ const { speciesColor } = await import("../static/js/app-defaults.js");
 const {
   catchSizePopupValue,
   filteredMapRecordsByDetails,
+  mapPopupHtml,
   mapRecordAngler,
   mapRecordLake,
   mapRecordsInViewport,
@@ -72,3 +73,12 @@ assert.equal(mapRecordsInViewport(viewportMap, viewportRecords).map((record) => 
 assert.equal(catchSizePopupValue({ length: "20", weight: "4" }), "4 lb · 20 in");
 assert.equal(catchSizePopupValue({ length: "20" }), "20 in");
 assert.equal(catchSizePopupValue({}), "");
+const catchPopup = String(mapPopupHtml({
+  type: "catch",
+  trip: { id: "trip-42", date: "2026-09-12", location: "Lake Ontario", method: "Trolling" },
+  catchItem: { species: "Lake Trout", length: "24", fowCaught: "40" },
+}));
+assert.match(catchPopup, /Lake Trout at Lake Ontario/);
+assert.match(catchPopup, /View Trip/);
+assert.match(catchPopup, /data-view-trip="trip-42"/);
+assert.doesNotMatch(catchPopup, /NOAA|Thermocline|Current near catch depth|historical water profile/i);

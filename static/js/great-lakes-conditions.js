@@ -663,6 +663,7 @@ export function syncGreatLakesLayerControls(host = document.querySelector("#grea
   host.classList.toggle("has-history", host.querySelector("[data-gl-forecast]")?.value === HISTORY_FORECAST_VALUE);
   host.classList.toggle("has-current-layer", layer === "currents");
   host.classList.toggle("has-temperature-layer", layer === "temperature");
+  host.classList.toggle("has-gl-layer", Boolean(layer));
   host.classList.toggle("has-thermocline-layer", layer === "thermocline");
   host.classList.toggle("has-wave-layer", layer === "waves");
   host.classList.toggle("has-upwelling-layer", layer === "upwelling");
@@ -1334,7 +1335,7 @@ function loadParticleWaterMasks() {
   }))).catch((error) => {
     particleWaterMasksRequest = null;
     throw error;
-  }));
+  });
   return particleWaterMasksRequest;
 }
 

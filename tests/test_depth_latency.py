@@ -26,7 +26,7 @@ def test_model_depth_reads_saved_grid_without_catalogue_or_network(monkeypatch):
                        {"wet": GRID["wet"], "depth": GRID["depth"]})
     def no_discovery(*args):
         raise AssertionError("static bathymetry must survive an offline catalogue")
-    monkeypatch.setattr(service, "discovered_runs", no_discovery)
+    monkeypatch.setattr(service, "_latest_regular_grid_path", no_discovery)
     assert service.model_bathymetry_depth(43.505, -77.995, ("LOOFS",), timeout=0)["depthMeters"] == 100
 
 
