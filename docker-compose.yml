@@ -20,8 +20,6 @@ services:
       FISH_CLOUD_API_URL: ${FISH_CLOUD_API_URL:-}
       FISH_API_TOKEN: ${FISH_API_TOKEN:-}
       FISH_API_TOKEN_FILE: ${FISH_API_TOKEN_FILE:-}
-    env_file:
-      - ${FISH_OAUTH_ENV_FILE:-/dev/null}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
       interval: 10s

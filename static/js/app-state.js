@@ -136,15 +136,16 @@ export async function loadState() {
   // A cached document has no server revision and must never enable a save.
   logbookRevision = "";
   if (location.protocol !== "file:") {
-    const response = await fetch("/api/logbook");
-    if (response.status === 401) {
-      window.location.assign("/login");
-      throw new Error("Sign in to access your logbook.");
+    try {
+      const response = await fetch("/api/logbook");
+      if (response.ok) {
+        const document = validateState(await response.json());
+        logbookRevision = response.headers.get("ETag") || "";
+        return document;
+      }
+    } catch {
+      // Fall through to browser storage when the server is unavailable.
     }
-    if (!response.ok) throw new Error("Could not load your logbook from the server.");
-    const document = validateState(await response.json());
-    logbookRevision = response.headers.get("ETag") || "";
-    return document;
   }
 
   try {

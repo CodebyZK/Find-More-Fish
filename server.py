@@ -27,15 +27,16 @@ def main() -> None:
         raise SystemExit(1)
     if frontend_build_is_stale():
         print("Warning: static/js or static/css changed since the last build; run `npm run build` to see the changes.", file=sys.stderr)
-    if not config.auth_required:
-        try:
-            app.extensions["fish.storage"].logbook.initialize()
-        except Exception as error:
-            app.logger.exception("Could not initialize the stored logbook database; starting in degraded mode.")
-            print(f"Warning: the logbook database could not be initialized; starting in degraded mode: {error}", file=sys.stderr)
+    try:
+        app.extensions["fish.storage"].logbook.initialize()
+    except Exception as error:
+        # Startup must remain available for recovery and read-only inspection
+        # when the existing SQLite file is corrupt, legacy, or incompatible.
+        app.logger.exception("Could not initialize the stored logbook database; starting in degraded mode.")
+        print(f"Warning: the logbook database could not be initialized; starting in degraded mode: {error}", file=sys.stderr)
 
     print(f"Selfhostable Fishing Logbook running at http://{config.host}:{config.port}")
-    print(f"Database root: {config.data_dir}")
+    print(f"Database: {config.database_file}")
     app.run(host=config.host, port=config.port, threaded=True)
 
 

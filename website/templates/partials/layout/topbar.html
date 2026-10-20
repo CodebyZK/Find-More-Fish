@@ -1,0 +1,7 @@
+{% extends 'shared/partials/layout/topbar.html' %}
+{% block topbar_extensions %}
+<div class="account-actions">
+  <span class="account-name" title="Signed in with GitLab">{{ account_name }}</span>
+  <button class="button secondary" id="logoutButton" type="button">Sign out</button>
+</div>
+{% endblock %}

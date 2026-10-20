@@ -32,10 +32,7 @@ if (process.env.FISH_TEST_PYTHON) {
   command = "python3";
 }
 
-// The test runner explicitly selects disposable shared storage; normal website
-// startup still requires GitLab sign-in and account storage.
-const testStartup = "from dataclasses import replace; import server; server.config = replace(server.config, testing=True, auth_required=False); server.app = server.create_app(server.config); server.main()";
-const child = spawn(command, [...commandArgs, "-c", testStartup], {
+const child = spawn(command, [...commandArgs, "server.py"], {
   cwd: projectRoot,
   env: {
     ...process.env,

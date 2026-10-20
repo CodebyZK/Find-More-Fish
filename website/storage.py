@@ -8,9 +8,9 @@ from threading import Lock
 
 from flask import current_app, g, has_request_context
 
-from .config import AppConfig
-from .storage.base import Storage
-from .storage.local import LocalLogbookStore, LocalMediaStore
+from backend.config import AppConfig
+from backend.storage.base import Storage
+from backend.storage.local import LocalLogbookStore, LocalMediaStore
 
 
 def auth_required() -> bool:
@@ -18,7 +18,7 @@ def auth_required() -> bool:
 
 
 def user_data_dir() -> Path:
-    config = current_app.extensions["fish.config"]
+    config = current_app.extensions["website.config"]
     if not auth_required():
         return config.data_dir
     user_id = getattr(g, "gitlab_user_id", None)

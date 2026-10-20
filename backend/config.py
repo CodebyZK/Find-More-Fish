@@ -28,8 +28,6 @@ class AppConfig:
     storage_backend: str = "local"
     cloud_api_url: str = ""
     testing: bool = False
-    # Website accounts are required unless a test explicitly selects shared storage.
-    auth_required: bool | None = None
     # Local cache for NOAA model-depth fallback and contour indexes.
     great_lakes_cache_dir: str = ""
     # Public Great Lakes Trolling API used directly by desktop and mobile clients.
@@ -38,8 +36,6 @@ class AppConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "data_dir", Path(self.data_dir).expanduser().resolve())
         object.__setattr__(self, "storage_backend", str(self.storage_backend or "local").strip().lower())
-        if self.auth_required is None:
-            object.__setattr__(self, "auth_required", not self.testing)
 
     @property
     def database_file(self) -> Path:

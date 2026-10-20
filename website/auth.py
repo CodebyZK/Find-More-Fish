@@ -71,7 +71,9 @@ def configure_gitlab_auth(app: Flask) -> None:
     def require_login() -> Response | tuple[Response, int] | None:
         if not app.config["AUTH_REQUIRED"]:
             return None
-        if request.path in PUBLIC_PATHS or request.path.startswith("/static/"):
+        if request.path == "/":
+            return redirect("/trips" if session.get("gitlab_user_id") else "/login")
+        if request.path in PUBLIC_PATHS or request.path.startswith(("/static/", "/website/static/")):
             return None
         user_id = session.get("gitlab_user_id")
         if isinstance(user_id, int) and user_id > 0:

@@ -2,51 +2,43 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from flask import Flask, Response, jsonify, request
 
 from . import cloud_storage
 from . import great_lakes_cache
 from .config import PROJECT_ROOT, AppConfig
 from .frontend_assets import asset_url
-from .gitlab_auth import configure_gitlab_auth
 from .logbook_store import LogbookStorageError
 from .media_service import MediaNotFound
 from .request_security import configure_request_security
 from .routes import environment, logbook, media, pages
 from .storage import InvalidRevision, MediaInventoryIncomplete, MediaRequestError, RevisionConflict, Storage, create_storage
-from .user_storage import AccountStorage
 
 
 SELF_CACHED_ENDPOINTS = {"pages.static_files"}
 CACHED_MEDIA_ENDPOINTS = {"media.uploaded_file", "media.uploaded_preview_file"}
 
 
-def create_app(config: AppConfig | None = None, *, storage: Storage | None = None) -> Flask:
+def create_app(config: AppConfig | None = None, *, storage: Storage | None = None, configure_app: Callable[[Flask], None] | None = None) -> Flask:
     config = config or AppConfig.from_env()
     app = Flask(__name__, static_folder=None, template_folder=str(PROJECT_ROOT / "templates"))
     app.config.update(
         SECRET_KEY=config.secret_key,
         SESSION_COOKIE_HTTPONLY=True,
-        # GitLab returns via a top-level cross-site OAuth navigation.
-        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SAMESITE="Strict",
         # Enabled by the production deployment once Cloudflare/Nginx enforce
         # HTTPS. Keep the default off for the documented local HTTP workflow.
         SESSION_COOKIE_SECURE=config.session_cookie_secure,
         TESTING=config.testing,
-        AUTH_REQUIRED=config.auth_required,
-        AUTH_DATA_DIR=config.data_dir,
     )
     app.extensions["fish.config"] = config
-    configure_gitlab_auth(app)
-    if config.auth_required:
-        if config.storage_backend != "local":
-            raise RuntimeError("GitLab account storage requires FISH_STORAGE_BACKEND=local; the cloud worker is not account scoped.")
-        if storage is not None:
-            raise ValueError("Shared storage cannot be supplied when GitLab authentication is required.")
-        app.extensions["fish.accounts"] = AccountStorage(config)
-    else:
-        app.extensions["fish.storage"] = storage or create_storage(config)
+    app.extensions["fish.storage"] = storage or create_storage(config)
     app.jinja_env.globals["asset_url"] = asset_url
+    # Optional host integration runs before request security is registered.
+    if configure_app is not None:
+        configure_app(app)
     configure_request_security(app)
     _register_error_handlers(app)
 
@@ -56,7 +48,7 @@ def create_app(config: AppConfig | None = None, *, storage: Storage | None = Non
         # proxies must not cache it; API responses and errors remain no-store.
         if response.status_code >= 400:
             response.headers["Cache-Control"] = "no-store"
-        elif not config.auth_required and request.endpoint in CACHED_MEDIA_ENDPOINTS and request.method in {"GET", "HEAD"}:
+        elif request.endpoint in CACHED_MEDIA_ENDPOINTS and request.method in {"GET", "HEAD"}:
             response.headers["Cache-Control"] = "private, max-age=3600"
         elif request.endpoint not in SELF_CACHED_ENDPOINTS:
             response.headers["Cache-Control"] = "no-store"

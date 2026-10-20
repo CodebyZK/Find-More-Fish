@@ -9,9 +9,6 @@ from ..storage import Storage
 
 
 def storage() -> Storage:
-    accounts = current_app.extensions.get("fish.accounts")
-    if accounts is not None:
-        return accounts.current()
     return current_app.extensions["fish.storage"]
 
 

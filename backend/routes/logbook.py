@@ -24,8 +24,7 @@ from ..shared_trip_archive import (
     read_shared_archive,
 )
 from ..storage import MediaRequestError
-from ..user_storage import user_data_dir
-from . import read_document, storage
+from . import app_config, read_document, storage
 
 
 blueprint = Blueprint("logbook", __name__)
@@ -77,7 +76,7 @@ def export_archive() -> tuple[Response, int] | Response:
     if not stores.logbook.exists():
         return jsonify({"error": "The local SQLite database does not exist yet."}), 404
     document = stores.logbook.read().document
-    data_dir = user_data_dir()
+    data_dir = app_config().data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(prefix="logbook-export-", suffix=".zip", dir=data_dir, delete=False) as temporary:
         archive_path = Path(temporary.name)

@@ -1,19 +1,8 @@
 # Fishing Logbook: Codex Working Agreement
 
-## Website branch requirements
-
-This branch integrates shared features from `main` and retains its own production
-pipeline, GitLab OAuth sign-in, and per-account local storage. These branch
-requirements take precedence over inherited single-operator descriptions below.
-Normal startup requires authentication; shared storage is only selected explicitly
-in tests. Logbooks, uploads, previews, galleries, queues, and archives must resolve
-to `FISH_DATA_DIR/users/gitlab-<id>/`. Never select the shared cloud backend for
-authenticated accounts. Browser logbooks load only from the server and must never
-fall back to or populate localStorage on HTTP(S). Keep OAuth configuration outside
-Git and retain the Website-only deployment rules. The older `docs/` collection
-was intentionally removed on this branch; use the source, tests, and README for
-current behavior.
-
+When the `website/` package is present, its separate entry point, deployment,
+and tests follow `website/AGENTS.md` and `website/README.md`. The descriptions
+below apply to the shared application.
 
 ## Project shape
 

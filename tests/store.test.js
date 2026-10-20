@@ -80,26 +80,21 @@ function validDocument(overrides = {}) {
   for (const failedRead of [
     async () => { throw new Error("startup connection failure"); },
     async () => okJson({ error: "unavailable" }, { status: 503 }),
-    async () => okJson({ schemaVersion: 1 }, { headers: { ETag: '"99"' } })
+    async () => okJson({ schemaVersion: 1 }, { headers: { ETag: '"99"' } }),
+    async () => okJson(cached)
   ]) {
     appState.setLogbookRevision('"stale"');
     setFetch(failedRead);
-    const before = structuredClone(appState.state);
-    await assert.rejects(appState.loadState());
-    assert.equal(appState.logbookRevision, "", "failed reads never carry a server revision");
+    replaceState(await appState.loadState());
+    assert.equal(appState.logbookRevision, "", "fallbacks and missing ETags never carry a server revision");
     const calls = [];
     setFetch(async (url) => { calls.push(url); return okJson({}); });
     await assert.rejects(commit((draft) => { draft.settings.theme = "dark"; }), /Reload the page before saving/);
     assert.deepEqual(calls, [], "no request can overwrite server data after a failed startup read");
-    assert.deepEqual(appState.state, before, "failed startup never installs a cached account logbook");
+    assert.deepEqual(appState.state, cached);
     assert.deepEqual(JSON.parse(localStorage.getItem("fishing-logbook-v2")), cached);
   }
 
-  setFetch(async () => okJson(cached));
-  replaceState(await appState.loadState());
-  await assert.rejects(commit((draft) => { draft.settings.theme = "dark"; }), /Reload the page before saving/);
-
-  localStorage.removeItem("fishing-logbook-v2");
   setFetch(async () => okJson(cached, { headers: { ETag: '"100"' } }));
   replaceState(await appState.loadState());
   let savedRevision;
@@ -109,5 +104,4 @@ function validDocument(overrides = {}) {
   });
   await commit((draft) => { draft.settings.theme = "dark"; });
   assert.equal(savedRevision, '"100"', "a successful reload restores revision-checked saves");
-  assert.equal(localStorage.getItem("fishing-logbook-v2"), null, "server logbooks are never cached across accounts");
 }

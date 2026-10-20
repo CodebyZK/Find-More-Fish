@@ -154,12 +154,9 @@ def test_archive_import_can_replace_unreadable_database() -> None:
         assert list(root.glob(".logbook.sqlite3.recovery-*"))
 
 
-def test_main_starts_when_database_initialization_fails(tmp_path) -> None:
-    fish = make_app(tmp_path)
-    logbook = fish.logbook
+def test_main_starts_when_database_initialization_fails() -> None:
+    logbook = server.app.extensions["fish.storage"].logbook
     with (
-        patch.object(server, "app", fish.app),
-        patch.object(server, "config", fish.config),
         patch("server.frontend_is_built", return_value=True),
         patch("server.frontend_build_is_stale", return_value=False),
         patch.object(logbook, "initialize", side_effect=RuntimeError("simulated initialization failure")),

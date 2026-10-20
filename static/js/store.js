@@ -45,7 +45,6 @@ function installState(document) {
 }
 
 function cacheLocally(document) {
-  if (location.protocol !== "file:") return;
   try {
     localStorage.setItem(storageKey, JSON.stringify(document));
   } catch (error) {
@@ -74,7 +73,7 @@ async function persist(document) {
   const body = JSON.stringify(document);
   if (persisted && body === JSON.stringify(persisted)) return;
   if (!logbookRevision) {
-    throw new Error("The server logbook could not be loaded. Reload the page before saving changes.");
+    throw new Error("The server logbook could not be loaded. Reload the page before saving changes; the cached copy is available for viewing.");
   }
   const headers = { "Content-Type": "application/json", "If-Match": logbookRevision };
   const response = await protectedFetch("/api/logbook", { method: "PUT", headers, body });

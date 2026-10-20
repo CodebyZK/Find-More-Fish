@@ -1,4 +1,3 @@
-import { protectedFetch, storageKey } from "./app-config.js";
 import { createId } from "./app-defaults.js";
 import { loadState, state, ui } from "./app-state.js";
 import { replaceState } from "./store.js";
@@ -119,9 +118,6 @@ export function syncMobileSummaryPanel() {
 
 export async function init() {
   syncMobileSummaryPanel();
-  if (location.protocol !== "file:") {
-    try { localStorage.removeItem(storageKey); } catch { /* Browser storage may be unavailable. */ }
-  }
   replaceState(await loadState());
   applyThemePreference();
   renderAll();
@@ -130,16 +126,6 @@ export async function init() {
 }
 
 export function setup() {
-  document.querySelector("#logoutButton")?.addEventListener("click", async () => {
-    try {
-      const response = await protectedFetch("/logout", { method: "POST" });
-      if (!response.ok) throw new Error("Could not sign out");
-      window.location.assign("/login");
-    } catch (error) {
-      alert(error.message || "Could not sign out. Please try again.");
-    }
-  });
-
   document.querySelector("#method").addEventListener("change", () => {
     queueMicrotask(() => updateMethodVisibility({ applyStartupSpread: true }));
   });

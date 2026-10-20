@@ -16,7 +16,7 @@ from zipfile import ZipFile
 from PIL import Image
 
 from backend.backend_config import DEFAULT_LOGBOOK
-from backend.app_factory import create_app
+from website.app import create_app
 from backend.config import AppConfig
 
 
@@ -27,7 +27,6 @@ class GitLabAuthTests(unittest.TestCase):
         self.app = create_app(AppConfig(
             data_dir=Path(self.directory.name),
             testing=True,
-            auth_required=True,
             secret_key="test-only-gitlab-session-key",
         ))
         self.app.config.update({
@@ -50,7 +49,7 @@ class GitLabAuthTests(unittest.TestCase):
             self.assertEqual(f"Bearer token-{user_id}", f"Bearer {kwargs['token']}")
             return {"id": user_id, "username": f"user{user_id}", "name": f"User {user_id}"}
 
-        with patch("backend.gitlab_auth._json_request", side_effect=response):
+        with patch("website.auth._json_request", side_effect=response):
             finish = client.get(f"/auth/gitlab/callback?state={query['state'][0]}&code=valid")
         self.assertEqual(302, finish.status_code)
         self.assertEqual("/trips", finish.headers["Location"])
@@ -144,7 +143,42 @@ class GitLabAuthTests(unittest.TestCase):
     def test_authenticated_website_rejects_shared_cloud_storage(self):
         with self.assertRaisesRegex(RuntimeError, "not account scoped"):
             create_app(AppConfig(data_dir=Path(self.directory.name), testing=True,
-                                 auth_required=True, storage_backend="cloud", cloud_api_url="https://cloud.invalid"))
+                                 storage_backend="cloud", cloud_api_url="https://cloud.invalid"))
+
+    def test_signed_in_shell_inherits_shared_layout_and_adds_account_controls(self):
+        client = self.app.test_client()
+        self.sign_in(client, 101)
+        page = client.get("/trips")
+        self.assertEqual(200, page.status_code)
+        self.assertIn(b'id="newTripButton"', page.data)
+        self.assertIn(b'id="logoutButton"', page.data)
+        self.assertIn(b'User 101', page.data)
+
+    def test_authentication_precedes_shared_csrf_checks(self):
+        client = self.app.test_client()
+        self.assertEqual(401, client.put("/api/logbook", json={}).status_code)
+        self.sign_in(client, 101)
+        self.assertEqual(403, client.put("/api/logbook", json={}).status_code)
+
+    def test_production_website_refuses_the_shared_frontend_bundle(self):
+        app = create_app(AppConfig(data_dir=Path(self.directory.name), secret_key="bundle-guard"))
+        client = app.test_client()
+        with client.session_transaction() as cookie:
+            cookie["gitlab_user_id"] = 101
+        with patch("website.app.website_frontend_ready", return_value=False):
+            self.assertEqual(503, client.get("/trips").status_code)
+            self.assertEqual(503, client.get("/static/dist/app.js").status_code)
+            self.assertEqual(200, app.test_client().get("/login").status_code)
+            self.assertEqual(200, client.get("/healthz").status_code)
+
+    def test_shared_factory_retains_its_own_behavior(self):
+        from backend.app_factory import create_app as create_shared_app
+        shared = create_shared_app(AppConfig(data_dir=Path(self.directory.name), testing=True))
+        client = shared.test_client()
+        self.assertEqual(200, client.get("/trips").status_code)
+        self.assertEqual(404, client.get("/login").status_code)
+        self.assertNotIn(b'id="logoutButton"', client.get("/trips").data)
+        self.assertNotIn("website.accounts", shared.extensions)
 
     def test_allowlist_rejects_unlisted_account(self):
         self.app.config["GITLAB_ALLOWED_USER_IDS"] = "101"
@@ -160,7 +194,7 @@ class GitLabAuthTests(unittest.TestCase):
     def sign_in_rejected(self, client, user_id):
         start = client.get("/auth/gitlab")
         state = parse_qs(urlparse(start.headers["Location"]).query)["state"][0]
-        with patch("backend.gitlab_auth._json_request", side_effect=[
+        with patch("website.auth._json_request", side_effect=[
             {"access_token": "token"}, {"id": user_id, "username": "other"},
         ]):
             finish = client.get(f"/auth/gitlab/callback?state={state}&code=valid")

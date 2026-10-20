@@ -1,0 +1,7 @@
+@import "../../../static/css/app.css";
+.account-actions { display: flex; align-items: center; gap: 10px; padding-left: 10px; border-left: 1px solid var(--line); }
+.account-name { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
+.account-actions .button { width: auto; white-space: nowrap; }
+@media (max-width: 640px) {
+  .account-actions { justify-content: flex-end; padding-left: 0; border-left: 0; }
+}

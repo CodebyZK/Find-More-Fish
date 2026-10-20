@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -40,6 +41,11 @@ const options = {
   metafile: true,
 };
 
+// Optional build integration supplies entry points, injects, and plugins.
+if (process.env.FISH_FRONTEND_EXTENSION) {
+  Object.assign(options, (await import(pathToFileURL(path.resolve(root, process.env.FISH_FRONTEND_EXTENSION)).href)).default);
+}
+
 function writeManifest() {
   // Leaflet's runtime looks for these conventional filenames relative to the
   // stylesheet folder. esbuild also emits hashed copies referenced by its CSS,
@@ -71,10 +77,10 @@ const manifestPlugin = {
 
 fs.rmSync(outdir, { recursive: true, force: true });
 if (watch) {
-  const context = await esbuild.context({ ...options, plugins: [manifestPlugin] });
+  const context = await esbuild.context({ ...options, plugins: [...(options.plugins || []), manifestPlugin] });
   await context.watch();
   console.log("Watching static/js and static/css for changes...");
 } else {
-  await esbuild.build({ ...options, plugins: [manifestPlugin] });
+  await esbuild.build({ ...options, plugins: [...(options.plugins || []), manifestPlugin] });
   console.log(`Built ${path.relative(root, outdir)}`);
 }

@@ -1,0 +1,9 @@
+services:
+  selfhostable-fishing-logbook:
+    build:
+      args:
+        APP_EXTENSION: website
+        FRONTEND_EXTENSION: website/frontend.config.mjs
+    env_file:
+      - ${FISH_OAUTH_ENV_FILE:-website/.env.example}
+    command: ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "--timeout", "120", "website.server:app"]
