@@ -43,7 +43,6 @@ const child = spawn(command, [...commandArgs, "server.py"], {
     PYTHONUNBUFFERED: "1",
     // Browser tests must not download NOAA data in the background or share
     // the developer's NOAA cache.
-    GREAT_LAKES_BACKGROUND_REFRESH: "false",
     GREAT_LAKES_CACHE_DIR: path.join(dataDir, "great-lakes-cache"),
   },
   stdio: "inherit",

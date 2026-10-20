@@ -1,9 +1,7 @@
-"""Shared on-disk cache and binary OPeNDAP reader for NOAA Great Lakes data.
+"""Shared disk cache and binary OPeNDAP reader for NOAA bathymetry lookups.
 
-Gunicorn runs several worker processes, and the background refresher runs in
-only one of them, so downloaded NOAA data lives on disk where every worker
-(and the next server start) can reuse it. Writes are atomic renames, so a
-reader never sees a partial file.
+Bathymetry data is cached on disk so each worker and server restart can reuse
+it. Writes use atomic renames so readers never see partial files.
 """
 
 from __future__ import annotations
@@ -12,7 +10,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import struct
 import sys
 import tempfile
@@ -154,17 +151,6 @@ def read_record(target: Path) -> tuple[dict, dict[str, array]] | None:
         return header, arrays
     except (OSError, ValueError, KeyError, struct.error):
         return None
-
-
-def prune(directory: Path, keep: set[str]) -> None:
-    """Remove child directories of ``directory`` whose names are not in ``keep``."""
-    try:
-        children = list(directory.iterdir())
-    except OSError:
-        return
-    for child in children:
-        if child.is_dir() and child.name not in keep:
-            shutil.rmtree(child, ignore_errors=True)
 
 
 def http_get(url: str, timeout: float = 60) -> bytes:

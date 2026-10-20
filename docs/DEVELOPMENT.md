@@ -58,7 +58,7 @@ docker compose down
 - `backend/storage/`: `LogbookStore`/`MediaStore` interfaces with local (SQLite + disk) and cloud implementations, plus the media transaction helper.
 - `backend/logbook_store.py`: v2 validation (shared schema + semantic rules). `backend/logbook_repository.py`: SQLite I/O and revisions.
 - `backend/media_service.py`, `backend/archive_service.py`, `backend/shared_trip_archive.py`: media helpers, whole-logbook archives, Shared Trip ZIPs.
-- `backend/weather_service.py`, `bathymetry_service.py`, `great_lakes_service.py`: environmental proxies.
+- `backend/weather_service.py` and `bathymetry_service.py`: environmental lookups, including the isolated NOAA depth fallback.
 - `schema/`: the shared v2 JSON Schema, constants, and canonical default document. `npm run schema:generate` regenerates `static/js/generated/` and the mobile copies under `..\Mobile\src\domain\generated`; `npm run schema:check` checks both clients when the adjacent Mobile checkout is available. GitLab runs `npm run schema:check:desktop` because its checkout contains only this repository.
 - `templates/index.html` and `templates/partials/`: server-rendered shell, screens, dialogs, and row templates.
 - `static/js/`: ES modules by concern. `store.js` owns every logbook change (`commit`), `actions.js` holds domain actions, `html.js` the auto-escaping `html` template tag, `router.js` history navigation, `vendor.js` third-party libraries.
@@ -165,24 +165,7 @@ Application (read once by `AppConfig.from_env()`): `HOST` (default `127.0.0.1`),
 `FISH_DATA_DIR` overrides the local runtime data directory. Browser tests set it
 to a disposable temporary directory so they cannot touch personal logbook data.
 
-NOAA Great Lakes data: `GREAT_LAKES_BACKGROUND_REFRESH` (default `true`; tests
-and the Playwright server turn it off) keeps the map's NOAA data downloaded in
-the background, and `GREAT_LAKES_CACHE_DIR` (default
-`<system temp>/fishing-logbook-great-lakes`) holds that shared download cache.
-The cache is disposable and is never part of a backup. See
-[Great Lakes data refresh](ARCHITECTURE.md#great-lakes-data-refresh).
-`GREAT_LAKES_PREPARE_WORKERS` controls drawing processes (default: up to four,
-limited by available CPU cores; set `1` for minimal memory use). Workers stay
-alive across preparation batches and hourly refreshes. Up to four lake models
-download concurrently. Run metadata and complete animation-frame ranges are
-shared on disk; temperature keeps its fitted desktop colour range, while waves
-and upwelling skip range scans because their colour domains are fixed. New
-value images use faster WebP encoding at quality 97, trading larger files for
-less preparation time. Restart the app after changing this setting.
-`GREAT_LAKES_HISTORY_URL` (default `https://greatlakestrolling.com`) is the
-Great Lakes Trolling site the map's "Past 90 days" reads saved conditions from;
-point it at a local copy (`http://127.0.0.1:8090`) while developing both.
-
+Great Lakes conditions: the desktop browser calls the same public `/api/v1` API as mobile. `GREAT_LAKES_API_URL` (default `https://greatlakestrolling.com`) selects the compatible API host and must allow cross-origin requests when it differs from the desktop origin. `GREAT_LAKES_CACHE_DIR` controls the local cache for depth contour indexes; it is disposable and is never part of a backup.
 Launcher: `APP_URL`, `CONTAINER_NAME`, and `LEGACY_CONTAINER_NAME`.
 
 Browser tests use Node.js 22+ and Playwright for Chromium. Run `npm ci`,

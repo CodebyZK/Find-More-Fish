@@ -8,12 +8,12 @@ test("currents animate temperature backgrounds and temporarily hide stations", a
   const frames = [0, 3].map((forecastHour) => ({
     forecastHour, validTime: `2026-10-05T${forecastHour === 0 ? "12" : "15"}:00:00Z`
   }));
-  await page.route("**/api/great-lakes/**", async (route) => {
+  await page.route("**/api/v1/**", async (route) => {
     const url = new URL(route.request().url());
     const pathname = url.pathname;
     let payload = { rasters: [], data: [], fields: [], metadata: { models: [] } };
-    if (pathname.endsWith("/status")) payload = { version: "animation-qa", models: {} };
-    else if (pathname.endsWith("/observations")) payload = { stations: [{
+    if (pathname.endsWith("/manifest")) payload = { version: "animation-qa", generatedAt: "2026-10-05T12:00:00Z", layers: [] };
+    else if (pathname.endsWith("/stations")) payload = { stations: [{
       id: "qa-buoy", name: "Test buoy", type: "Buoy", latitude: 43.7, longitude: -77.9,
       waterTemperature: { temperatureC: 17, observedAt: "2026-10-05T12:00:00Z" }
     }] };
@@ -21,13 +21,13 @@ test("currents animate temperature backgrounds and temporarily hide stations", a
       const layer = pathname.split("/").at(-1);
       const ordered = layer === "temperature" ? [...frames].reverse() : frames;
       payload = { ready: true, frames: ordered.map((frame) => ({
-        ...frame, url: `/api/great-lakes/qa-frame?layer=${layer}&hour=${frame.forecastHour}`
+        ...frame, url: `/api/v1/qa-frame?layer=${layer}&hour=${frame.forecastHour}`
       })) };
     } else if (pathname.endsWith("/qa-frame")) {
       const hour = Number(url.searchParams.get("hour"));
       payload = { ...payload, metadata: { minC: 10, maxC: 20, models: [], forecastHour: hour } };
       if (url.searchParams.get("layer") === "temperature") payload.rasters = [{
-        imageUrl: `/api/great-lakes/qa-image-${hour}`, bounds: [[43.2, -79.8], [44.3, -76.4]]
+        imageUrl: `/api/v1/qa-image-${hour}`, bounds: [[43.2, -79.8], [44.3, -76.4]]
       }];
     } else if (pathname.includes("/qa-image-")) {
       await route.fulfill({ contentType: "image/svg+xml", body: `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="${pathname.endsWith("-0") ? "#28c888" : "#2488ee"}"/></svg>` });
@@ -57,8 +57,8 @@ test("currents animate temperature backgrounds and temporarily hide stations", a
   await scrub(0);
   const images = page.locator(".great-lakes-animation-frame");
   await expect(images).toHaveCount(2);
-  await expect(images.nth(0)).toHaveAttribute("src", "/api/great-lakes/qa-image-0");
-  await expect(images.nth(1)).toHaveAttribute("src", "/api/great-lakes/qa-image-3");
+  await expect(images.nth(0)).toHaveAttribute("src", "https://greatlakestrolling.com/api/v1/qa-image-0");
+  await expect(images.nth(1)).toHaveAttribute("src", "https://greatlakestrolling.com/api/v1/qa-image-3");
   await page.locator("[data-gl-play]").click();
   const isBlending = (image) => image.evaluate(element => {
     const opacity = Number(getComputedStyle(element).opacity);
@@ -88,7 +88,7 @@ test("legacy thermocline colour frames keep full brightness during playback and 
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.addInitScript(() => localStorage.setItem("glc.AnimationSpeed", "slow"));
-  await page.route("**/api/great-lakes/**", async route => {
+  await page.route("**/api/v1/**", async route => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.includes("/qa-thermocline-image-")) {
       const x = pathname.endsWith("-0") ? 20 : 100;
@@ -96,12 +96,12 @@ test("legacy thermocline colour frames keep full brightness during playback and 
       return;
     }
     let payload = { rasters: [], metadata: { models: [] } };
-    if (pathname.endsWith("/status")) payload = { version: "thermocline-qa", models: {} };
+    if (pathname.endsWith("/manifest")) payload = { version: "thermocline-qa", generatedAt: "2026-10-05T12:00:00Z", layers: [] };
     else if (pathname.includes("/animation/")) payload = {
-      ready: true, frames: [0, 1].map(i => ({ forecastHour: i * 3, validTime: `2026-10-05T${i ? "15" : "12"}:00:00Z`, url: `/api/great-lakes/qa-thermocline-frame-${i}` }))
+      ready: true, frames: [0, 1].map(i => ({ forecastHour: i * 3, validTime: `2026-10-05T${i ? "15" : "12"}:00:00Z`, url: `/api/v1/qa-thermocline-frame-${i}` }))
     };
     else if (pathname.includes("/qa-thermocline-frame-")) payload.rasters = [{
-      imageUrl: `/api/great-lakes/qa-thermocline-image-${pathname.at(-1)}`, bounds: [[43.2, -79.8], [44.3, -76.4]]
+      imageUrl: `/api/v1/qa-thermocline-image-${pathname.at(-1)}`, bounds: [[43.2, -79.8], [44.3, -76.4]]
     }];
     await route.fulfill({ json: payload });
   });

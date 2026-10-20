@@ -317,7 +317,7 @@ def lookup_depth(latitude: float, longitude: float, lake_calibrations_feet: obje
 
 
 def model_depth_estimate(latitude: float, longitude: float) -> dict | None:
-    from .great_lakes_service import GREAT_LAKES_MODELS, model_bathymetry_depth
+    from .great_lakes_bathymetry import GREAT_LAKES_MODELS, model_bathymetry_depth
 
     models = tuple(dict.fromkeys(GREAT_LAKES_MODELS[lake] for lake in _candidate_contour_lakes(latitude, longitude)))
     return model_bathymetry_depth(latitude, longitude, models, timeout=MODEL_DEPTH_TIMEOUT_SECONDS)

@@ -7,7 +7,7 @@ test("Great Lakes trolling and jigging trips show saved thermocline and catch cu
   await resetLogbook(page, document);
   await stubExternalApis(page);
   const conditionRequests = [];
-  await page.route("**/api/great-lakes/history/point/fishing-conditions**", async (route) => {
+  await page.route("**/api/v1/history/point/fishing-conditions**", async (route) => {
     conditionRequests.push(new URL(route.request().url()));
     await route.fulfill({
       status: 200,

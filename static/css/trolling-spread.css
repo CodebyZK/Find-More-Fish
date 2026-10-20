@@ -28,10 +28,10 @@
 .spread-design-stage {
   position: absolute;
   top: 50%;
-  left: 50%;
-  width: 44.1%;
+  left: 9%;
+  width: 38%;
   aspect-ratio: 1717 / 916;
-  transform: translate(-50%, -50%);
+  transform: translateY(-50%);
 }
 
 .spread-boat-image {
@@ -126,12 +126,16 @@
   position: absolute;
   z-index: 6;
   width: max-content;
-  max-width: min(260px, 40vw);
+  box-sizing: border-box;
+  max-width: min(260px, 80%);
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(223, 243, 251, 0.96);
   color: #111827;
   font-size: clamp(8px, 0.85vw, 12px);
   font-weight: 900;
   line-height: 1.15;
-  transform: translate(7px, -50%);
+  transform: translate(-100%, -50%);
   white-space: normal;
   overflow-wrap: break-word;
 }
@@ -166,7 +170,8 @@
   flex-wrap: wrap;
   align-items: center;
   box-sizing: border-box;
-  width: min(390px, 28vw);
+  width: 80%;
+  max-width: 380px;
   gap: 4px;
   padding: 0;
   color: #111827;
@@ -209,6 +214,22 @@
 
 .spread-stat-text {
   flex: 0 0 100%;
+}
+
+@media (max-width: 600px) {
+  .spread-gear-list,
+  .spread-stat-text {
+    flex: 0 1 auto;
+  }
+
+  .spread-cheater-label {
+    transform: translate(-100%, -100%);
+  }
+
+  .spread-group[data-spread-slot="portDownRigger"] .spread-inline-name,
+  .spread-group[data-spread-slot="starboardHighDiver"] .spread-inline-name {
+    transform: translate(-50%, 0);
+  }
 }
 
 .trolling-spread-editor {

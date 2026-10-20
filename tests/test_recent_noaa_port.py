@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from conftest import make_app
-from backend import great_lakes_cache as cache, great_lakes_refresher as refresher
+from backend import great_lakes_cache as cache
 
 
 def test_noaa_502_retries_and_returns_the_successful_response(monkeypatch):
@@ -25,19 +25,6 @@ def test_retry_does_not_hide_other_errors(host, code):
         with pytest.raises(HTTPError):
             cache.http_get(url)
         assert get.call_count == 1
-
-
-def test_render_attempt_duration_finishes_even_when_work_failed(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_cache_dir", tmp_path)
-    worker = refresher.GreatLakesRefresher()
-    worker._start_render_timer(("model",), None, 100, restart=True)
-    worker._start_render_timer(("new model",), None, 110)
-    worker._finish_render_timer(120)
-    assert worker.state["renderCycleState"] == "finished"
-    assert worker.state["renderCycleDurationSeconds"] == 20
-    worker._start_render_timer(("new model",), None, 130, restart=True)
-    worker._finish_render_timer(135)
-    assert worker.state["renderCycleDurationSeconds"] == 5
 
 
 @pytest.mark.parametrize("detail", ["6", "9", "12", "full"])

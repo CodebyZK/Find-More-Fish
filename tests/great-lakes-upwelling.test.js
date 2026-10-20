@@ -28,7 +28,7 @@ await window.noaaGreatLakesApi.conditions({ layer: "upwelling", forecastHour: 6,
 await window.noaaGreatLakesApi.upwellingValue({ forecastHour: 6, latitude: 43.5, longitude: -79.5, models: "LOOFS" });
 await window.noaaGreatLakesApi.upwellingValue({ forecastHour: 0, latitude: 43.5, longitude: -79.5, time: "2026-10-05T03:00:00Z" });
 assert.deepEqual(requested, [
-  "/api/great-lakes/upwelling-raster?forecastHour=6&depth=0&resolution=512&models=LOOFS&data=",
-  "/api/great-lakes/upwelling-value?forecastHour=6&latitude=43.5&longitude=-79.5&models=LOOFS",
-  "/api/great-lakes/history/point/upwelling?time=2026-10-05T03%3A00%3A00Z&latitude=43.5&longitude=-79.5"
+  "https://greatlakestrolling.com/api/v1/layers/upwelling?forecastHour=6",
+  "https://greatlakestrolling.com/api/v1/point?latitude=43.5&longitude=-79.5&forecastHour=6&depth=0",
+  "https://greatlakestrolling.com/api/v1/history/point?latitude=43.5&longitude=-79.5&depth=0&time=2026-10-05T03%3A00%3A00Z"
 ]);

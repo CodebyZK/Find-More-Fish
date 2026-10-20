@@ -1,4 +1,4 @@
-"""Shared NOAA disk cache, binary OPeNDAP decoding, and leader election."""
+"""Bathymetry cache, binary OPeNDAP decoding, and shared resource locking."""
 
 from __future__ import annotations
 
@@ -78,16 +78,6 @@ def test_read_json_honours_maximum_age(tmp_path) -> None:
     os.utime(target, (old, old))
     assert cache.read_json(target, max_age_seconds=60) is None
     assert cache.read_json(tmp_path / "missing.json") is None
-
-
-def test_prune_keeps_only_named_runs(tmp_path) -> None:
-    for name in ("20261002t06z", "20261002t12z"):
-        (tmp_path / name).mkdir()
-        (tmp_path / name / "temperature.bin").write_bytes(b"x")
-
-    cache.prune(tmp_path, {"20261002t12z"})
-
-    assert [child.name for child in tmp_path.iterdir()] == ["20261002t12z"]
 
 
 def test_only_one_leader_lock_holder_at_a_time(tmp_path) -> None:

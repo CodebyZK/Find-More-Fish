@@ -107,6 +107,161 @@ async function readImage(url, width, height) {
   return context.getImageData(0, 0, canvas.width, canvas.height);
 }
 
+function emptyPixels(width, height) {
+  return { data: new Uint8ClampedArray(width * height * 4), width, height };
+}
+
+function rasterKey(raster) {
+  return JSON.stringify(raster.bounds);
+}
+
+// Interpolate the scalar value rasters before the palette filter colours them.
+// This moves fronts and gradients through intermediate values instead of
+// fading one completed forecast image over another.
+export async function createScalarRasterTransition(fromRasters, toRasters, options, filter) {
+  const rasters = new Map();
+  (fromRasters || []).forEach((raster) => rasters.set(rasterKey(raster), { from: raster }));
+  (toRasters || []).forEach((raster) => {
+    const pair = rasters.get(rasterKey(raster)) || {};
+    pair.to = raster;
+    rasters.set(rasterKey(raster), pair);
+  });
+  const pairs = [...rasters.values()].filter(({ from, to }) => (from?.valueUrl || to?.valueUrl) && (from?.valueRange || to?.valueRange));
+  if (!pairs.length) return null;
+
+  const lakes = await Promise.all(pairs.map(async ({ from, to }) => {
+    const first = from?.valueUrl ? from : to;
+    const reference = await readImage(first.valueUrl);
+    const { width, height } = reference;
+    const readRaster = async (imageUrl) => imageUrl
+      ? readImage(imageUrl, width, height)
+      : emptyPixels(width, height);
+    const [fromValues, toValues, fromMixed, toMixed] = await Promise.all([
+      readRaster(from?.valueUrl),
+      readRaster(to?.valueUrl),
+      readRaster(from?.mixedUrl),
+      readRaster(to?.mixedUrl)
+    ]);
+    const range = from?.valueRange || to?.valueRange;
+    const fromRange = from?.valueRange || range;
+    const toRange = to?.valueRange || range;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    const output = context.createImageData(width, height);
+    const valueOverlay = new CanvasOverlay(canvas, first.bounds, { ...options, opacity: 1 });
+    valueOverlay.on("add", () => {
+      if (filter?.css) valueOverlay.getElement().style.filter = filter.css;
+    });
+
+    let mixedOverlay = null, mixedCanvas = null, mixedContext = null, mixedOutput = null;
+    if (from?.mixedUrl || to?.mixedUrl) {
+      mixedCanvas = document.createElement("canvas");
+      mixedCanvas.width = width;
+      mixedCanvas.height = height;
+      mixedContext = mixedCanvas.getContext("2d");
+      mixedOutput = mixedContext.createImageData(width, height);
+      mixedOverlay = new CanvasOverlay(mixedCanvas, first.bounds, {
+        ...options,
+        opacity: 1,
+        className: `${options.className || ""} great-lakes-mixed-raster`
+      });
+    }
+
+    return {
+      fromValues: fromValues.data,
+      toValues: toValues.data,
+      fromMixed: fromMixed.data,
+      toMixed: toMixed.data,
+      fromRange,
+      toRange,
+      range,
+      width,
+      height,
+      context,
+      output,
+      valueOverlay,
+      mixedContext,
+      mixedOutput,
+      mixedOverlay
+    };
+  }));
+
+  let animationFrame = null, progress = 0;
+  function draw(nextProgress) {
+    progress = Math.max(0, Math.min(1, nextProgress));
+    lakes.forEach((lake) => {
+      const { fromValues, toValues, fromRange, toRange, range, output, width, height } = lake;
+      const fromSpan = Math.max(fromRange[1] - fromRange[0], 1e-9);
+      const toSpan = Math.max(toRange[1] - toRange[0], 1e-9);
+      const outputSpan = Math.max(range[1] - range[0], 1e-9);
+      for (let offset = 0; offset < width * height * 4; offset += 4) {
+        const fromAlpha = fromValues[offset + 3];
+        const toAlpha = toValues[offset + 3];
+        const fromValue = fromRange[0] + fromValues[offset] / 255 * fromSpan;
+        const toValue = toRange[0] + toValues[offset] / 255 * toSpan;
+        const value = fromAlpha && toAlpha
+          ? fromValue + (toValue - fromValue) * progress
+          : fromAlpha ? fromValue : toValue;
+        const gray = Math.max(0, Math.min(255, Math.round((value - range[0]) / outputSpan * 255)));
+        output.data[offset] = gray;
+        output.data[offset + 1] = gray;
+        output.data[offset + 2] = gray;
+        output.data[offset + 3] = Math.round(fromAlpha + (toAlpha - fromAlpha) * progress);
+      }
+      lake.context.putImageData(output, 0, 0);
+
+      if (lake.mixedOutput) {
+        const { fromMixed, toMixed, mixedOutput, mixedContext } = lake;
+        for (let offset = 0; offset < width * height * 4; offset += 4) {
+          const fromWeight = fromMixed[offset + 3] * (1 - progress);
+          const toWeight = toMixed[offset + 3] * progress;
+          const weight = fromWeight + toWeight;
+          for (let channel = 0; channel < 3; channel += 1) {
+            mixedOutput.data[offset + channel] = weight
+              ? (fromMixed[offset + channel] * fromWeight + toMixed[offset + channel] * toWeight) / weight
+              : MIXED[channel];
+          }
+          mixedOutput.data[offset + 3] = Math.min(255, Math.round(weight));
+        }
+        mixedContext.putImageData(mixedOutput, 0, 0);
+      }
+    });
+  }
+
+  draw(0);
+  const overlays = lakes.flatMap(({ mixedOverlay, valueOverlay }) => [mixedOverlay, valueOverlay].filter(Boolean));
+  return {
+    progress: 0,
+    addTo(group) { overlays.forEach((overlay) => overlay.addTo(group)); },
+    setZIndex(zIndex) { overlays.forEach((overlay) => overlay.setZIndex(zIndex)); },
+    show(value) {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+      draw(value);
+      this.progress = progress;
+    },
+    transition(duration) {
+      cancelAnimationFrame(animationFrame);
+      const started = performance.now();
+      const update = (now) => {
+        if (document.hidden) { animationFrame = null; return; }
+        const value = Math.max(0, Math.min(1, (now - started) / duration));
+        draw(value);
+        this.progress = progress;
+        animationFrame = value < 1 ? requestAnimationFrame(update) : null;
+      };
+      if (duration <= 0) this.show(1);
+      else animationFrame = requestAnimationFrame(update);
+    },
+    remove() {
+      cancelAnimationFrame(animationFrame);
+      overlays.forEach((overlay) => overlay.remove());
+    }
+  };
+}
+
 export async function createThermoclineFlow(payloads, options) {
   // Legacy colour-only responses retain instant forecast switching.
   if (!payloads.some((payload) => payload.rasters?.length)) return null;
@@ -120,8 +275,8 @@ export async function createThermoclineFlow(payloads, options) {
     const frames = await Promise.all(rasters.map(async (raster) => {
       if (!raster) return { values: new Uint8ClampedArray(width * height * 4), water: new Uint8ClampedArray(width * height * 4) };
       const values = await readImage(raster.valueUrl, width, height);
-      // Value and mixed images partition the water mask. Combine their alpha
-      // without needing a second coloured frame image.
+      // Value and mixed images partition the same water mask. Recombine their
+      // alpha for the morph without requiring a second coloured frame image.
       const water = new Uint8ClampedArray(values.data);
       if (raster.mixedUrl) {
         const mixed = await readImage(raster.mixedUrl, width, height);
@@ -138,16 +293,6 @@ export async function createThermoclineFlow(payloads, options) {
     const overlay = new CanvasOverlay(canvas, first.bounds, { ...options, opacity: 1 });
     return { frames, width, height, context, output, overlay, range: first.valueRange, flows: new Map() };
   }));
-  // Estimate motion before playback. Leaving this lazy makes the first frame of
-  // every new pair pay for optical-flow analysis and can look like a keyframe hold.
-  for (const lake of lakes) {
-    if (lake.frames.length < 2) continue;
-    for (let from = 0; from < lake.frames.length; from += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      const to = (from + 1) % lake.frames.length;
-      lake.flows.set(`${from}:${to}`, depthFlow(lake.frames[from].values, lake.frames[to].values, lake.width, lake.height));
-    }
-  }
   let frame = null, colors = [];
   function setRange(low, high) {
     colors = lakes.map(({ range }) => Array.from({ length: 256 }, (_, level) => paletteRgb(
@@ -157,6 +302,7 @@ export async function createThermoclineFlow(payloads, options) {
   function draw(from, to = from, progress = 0) {
     lakes.forEach((lake, index) => {
       const key = `${from}:${to}`;
+      if (from !== to && !lake.flows.has(key)) lake.flows.set(key, depthFlow(lake.frames[from].values, lake.frames[to].values, lake.width, lake.height));
       morphDepth(lake.frames[from], lake.frames[to], lake.output.data, lake.width, lake.height, progress, lake.flows.get(key), colors[index]);
       lake.context.putImageData(lake.output, 0, 0);
     });
@@ -168,15 +314,10 @@ export async function createThermoclineFlow(payloads, options) {
     transition(from, to, duration) {
       cancelAnimationFrame(frame);
       const started = performance.now();
-      let lastDraw = -Infinity;
       const update = (now) => {
         if (document.hidden) { frame = null; return; }
         const progress = Math.max(0, Math.min(1, (now - started) / duration));
-        // Cap CPU work while keeping motion smooth; always paint exact endpoints.
-        if (now - lastDraw >= 1000 / 30 || progress === 1) {
-          draw(from, to, progress);
-          lastDraw = now;
-        }
+        draw(from, to, progress);
         frame = progress < 1 ? requestAnimationFrame(update) : null;
       };
       frame = requestAnimationFrame(update);

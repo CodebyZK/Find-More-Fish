@@ -16,7 +16,7 @@ assert.equal(stepHistoryHour(historyHours(index), first, 1), first + 24 * HOUR);
 assert.match(String(greatLakesHistoryHtml()), /data-gl-history-open/);
 assert.match(String(historyCalendarHtml(historyHours(index), { selected: first + 24 * HOUR })), /data-gl-cal-day=/);
 
-// A past hour goes to the desktop server's history routes (passed on to the site).
+// A past hour goes directly to the shared Great Lakes public API.
 const requested = [];
 globalThis.fetch = async (url) => {
   requested.push(String(url));
@@ -32,13 +32,13 @@ await api.history();
 await api.stationHistory({ id: "45012" });
 await api.profile({ forecastHour: 6, latitude: 43.5, longitude: -79.5, models: "LOOFS" });
 assert.deepEqual(requested, [
-  "/api/great-lakes/history/layers/thermocline?time=2026-10-05T03%3A00%3A00Z",
-  "/api/great-lakes/history/point/temperature-profile?time=2026-10-05T03%3A00%3A00Z&latitude=43.5&longitude=-79.5",
-  "/api/great-lakes/history/point/fishing-conditions?time=2026-10-05T03%3A00%3A00Z&latitude=43.5&longitude=-79.5",
-  "/api/great-lakes/history/stations?time=2026-10-05T03%3A00%3A00Z",
-  "/api/great-lakes/history?",
-  "/api/great-lakes/history/stations/45012?",
-  "/api/great-lakes/profile?forecastHour=6&latitude=43.5&longitude=-79.5&models=LOOFS"
+  "https://greatlakestrolling.com/api/v1/history/layers/thermocline?time=2026-10-05T03%3A00%3A00Z",
+  "https://greatlakestrolling.com/api/v1/history/point?latitude=43.5&longitude=-79.5&depth=0&time=2026-10-05T03%3A00%3A00Z",
+  "https://greatlakestrolling.com/api/v1/history/point/fishing-conditions?time=2026-10-05T03%3A00%3A00Z&latitude=43.5&longitude=-79.5",
+  "https://greatlakestrolling.com/api/v1/history/stations?time=2026-10-05T03%3A00%3A00Z",
+  "https://greatlakestrolling.com/api/v1/history",
+  "https://greatlakestrolling.com/api/v1/history/stations/45012",
+  "https://greatlakestrolling.com/api/v1/point/temperature-profile?latitude=43.5&longitude=-79.5&forecastHour=6"
 ]);
 
 const start = Date.parse("2026-10-01T00:00:00Z") / 1000;

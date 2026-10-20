@@ -7,16 +7,16 @@ for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 
     await page.setViewportSize(viewport);
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
-    await page.route("**/api/great-lakes/status?**", route => route.fulfill({ json: { version: "test", models: {} } }));
+    await page.route("**/api/v1/manifest", route => route.fulfill({ json: { version: "test", generatedAt: "2026-10-10T16:00:00Z", layers: [] } }));
     const targetRequests = [];
     const targetRaster = { imageUrl: "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="#22d088"/></svg>'), bounds: [[43, -79], [44, -78]] };
-    await page.route("**/api/great-lakes/target-temperature?**", route => {
+    await page.route("**/api/v1/layers/target-temperature?**", route => {
       targetRequests.push(new URL(route.request().url()));
       return route.fulfill({ json: { rasters: [targetRaster], metadata: { targetC: 10, minDepthMeters: 5, maxDepthMeters: 15, minSurfaceTemperatureC: 0, maxSurfaceTemperatureC: 20, models: [{ model: "LOOFS", available: true, matchingCells: 4 }] } } });
     });
     const windPoints = [43, 43.25].flatMap(latitude => [-78, -77.75].map(longitude => ({ latitude, longitude, u: 5, v: 2, speedMetersPerSecond: 5.4, gustMetersPerSecond: 8, directionDegrees: 248, travelDegrees: 68 })));
-    await page.route("**/api/great-lakes/wind?**", route => route.fulfill({ json: { points: windPoints, metadata: { available: true, validTime: "2026-10-10T16:00:00Z" } } }));
-    await page.route("**/api/great-lakes/animation/wind?**", route => route.fulfill({ json: { ready: true, layer: "wind", scale: { min: 0, max: 1 }, frames: [0, 3].map(hour => ({ forecastHour: hour, validTime: `2026-10-10T${hour === 0 ? "16" : "19"}:00:00Z`, url: `/api/great-lakes/wind?forecastHour=${hour}&animation=1` })) } }));
+    await page.route("**/api/v1/layers/wind?**", route => route.fulfill({ json: { points: windPoints, metadata: { available: true, validTime: "2026-10-10T16:00:00Z" } } }));
+    await page.route("**/api/v1/animation/wind", route => route.fulfill({ json: { ready: true, layer: "wind", scale: { min: 0, max: 1 }, frames: [0, 3].map(hour => ({ forecastHour: hour, validTime: `2026-10-10T${hour === 0 ? "16" : "19"}:00:00Z`, url: `/api/v1/layers/wind?forecastHour=${hour}&animation=1` })) } }));
     await page.goto("/map");
     await expect(page).toHaveTitle("Fishing Logbook");
     await page.locator(".map-layers-menu > summary").click();

@@ -17,7 +17,6 @@ from conftest import make_app
 with tempfile.TemporaryDirectory() as server_data, patch.dict("os.environ", {
     "FISH_DATA_DIR": server_data,
     "GREAT_LAKES_CACHE_DIR": str(Path(server_data) / "great-lakes-cache"),
-    "GREAT_LAKES_BACKGROUND_REFRESH": "false",
 }):
     import server
 

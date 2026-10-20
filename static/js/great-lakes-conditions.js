@@ -1084,7 +1084,7 @@ export function renderGreatLakesCurrents(points, zoom, target = greatLakesCondit
   });
 }
 
-// Mirror TEMPERATURE_COLOR_STOPS / CURRENT_SPEED_COLOR_STOPS in backend/great_lakes_render.py.
+// Keep the desktop palettes aligned with the public Great Lakes API layers.
 export const TEMPERATURE_COLOR_STOPS = [
   [0, [58, 40, 168]], [0.13, [36, 92, 226]], [0.27, [14, 152, 242]], [0.4, [12, 204, 222]],
   [0.53, [34, 208, 136]], [0.66, [150, 222, 48]], [0.78, [252, 218, 36]], [0.89, [252, 140, 28]], [1, [228, 40, 52]]
@@ -1316,16 +1316,26 @@ export function decodeModelShoreline(rings) {
   };
 }
 
-let modelShorelineRequest = null;
-function loadModelShorelines() {
-  if (!modelShorelineRequest) modelShorelineRequest = fetch("/api/great-lakes/shoreline")
-    .then((response) => {
-      if (!response.ok) throw new Error("Native shoreline unavailable");
-      return response.json();
-    })
-    .then((payload) => payload.outlines)
-    .catch((error) => { modelShorelineRequest = null; throw error; });
-  return modelShorelineRequest;
+const PARTICLE_WATER_MASKS = [
+  { url: "/static/data/bathymetry/wave-mask/lake-erie.webp", bounds: [[41.0, -84.0008333333333], [43.0008333332533, -78.00000000024001]] },
+  { url: "/static/data/bathymetry/wave-mask/lake-huron.webp", bounds: [[43.0, -84.5008333333333], [46.5008333331933, -79.6800000001928]] },
+  { url: "/static/data/bathymetry/wave-mask/lake-michigan.webp", bounds: [[41.62, -88.0008333333333], [46.0908333331545, -84.50000000014]] },
+  { url: "/static/data/bathymetry/wave-mask/lake-ontario.webp", bounds: [[43.15, -79.90083333333331], [44.2508333332893, -76.05000000015401]] },
+  { url: "/static/data/bathymetry/wave-mask/lake-superior.webp", bounds: [[46.0, -92.2008333333333], [49.5008333331933, -84.000000000328]] }
+];
+let particleWaterMasksRequest = null;
+
+function loadParticleWaterMasks() {
+  if (!particleWaterMasksRequest) particleWaterMasksRequest = Promise.all(PARTICLE_WATER_MASKS.map(({ url, bounds }) => new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({ image, bounds });
+    image.onerror = () => reject(new Error("NOAA water mask unavailable"));
+    image.src = url;
+  }))).catch((error) => {
+    particleWaterMasksRequest = null;
+    throw error;
+  }));
+  return particleWaterMasksRequest;
 }
 
 export function decodeGreatLakesWaterMask(mask) {
@@ -1447,10 +1457,10 @@ export function createParticleLayer(map, fields, { clipToGreatLakesWater = false
   const baseDensity = CURRENT_PARTICLE_DENSITY[greatLakesControlValue("density")] || CURRENT_PARTICLE_DENSITY.medium;
   const speedScale = { slow: 0.5, normal: 1, fast: 1.9 }[greatLakesControlValue("animation-speed")] || 1;
   let frame = null, last = 0, active = true, origin = L.point(0, 0), size = L.point(0, 0), zoom = null;
-  let nativeOutlines = null;
+  let particleWaterMasks = null;
   if (clipToGreatLakesWater) {
-    loadModelShorelines().then((outlines) => {
-      nativeOutlines = outlines;
+    loadParticleWaterMasks().then((masks) => {
+      particleWaterMasks = masks;
       if (active) refresh();
     }).catch(() => { waterMaskFailed = true; waterMaskPixels = null; });
   }
@@ -1468,22 +1478,14 @@ export function createParticleLayer(map, fields, { clipToGreatLakesWater = false
     waterMaskWidth = waterMaskCanvas.width;
     waterMaskHeight = waterMaskCanvas.height;
     waterMaskPixels = null;
-    if (waterMaskFailed || !nativeOutlines?.length) return;
+    if (waterMaskFailed || !particleWaterMasks?.length) return;
     waterMaskCtx.clearRect(0, 0, waterMaskWidth, waterMaskHeight);
     waterMaskCtx.imageSmoothingEnabled = true;
     try {
-      for (const outline of nativeOutlines) {
-        waterMaskCtx.beginPath();
-        for (const ring of outline.rings || []) {
-          ring.forEach(([longitude, latitude], index) => {
-            const point = map.latLngToContainerPoint([latitude, longitude]);
-            if (index === 0) waterMaskCtx.moveTo(point.x, point.y);
-            else waterMaskCtx.lineTo(point.x, point.y);
-          });
-          waterMaskCtx.closePath();
-        }
-        waterMaskCtx.fillStyle = "white";
-        waterMaskCtx.fill("evenodd");
+      for (const { image, bounds: [[south, west], [north, east]] } of particleWaterMasks) {
+        const topLeft = map.latLngToContainerPoint([north, west]);
+        const bottomRight = map.latLngToContainerPoint([south, east]);
+        waterMaskCtx.drawImage(image, topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
       }
       const rgba = waterMaskCtx.getImageData(0, 0, waterMaskWidth, waterMaskHeight).data;
       const waterPixels = waterMaskWidth * waterMaskHeight;

@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import multiprocessing
-
 from flask import Flask, Response, jsonify, request
 
 from . import cloud_storage
 from . import great_lakes_cache
-from . import great_lakes_history_client
 from .config import PROJECT_ROOT, AppConfig
 from .frontend_assets import asset_url
-from .great_lakes_refresher import GreatLakesRefresher
 from .logbook_store import LogbookStorageError
 from .media_service import MediaNotFound
 from .request_security import configure_request_security
@@ -19,7 +15,7 @@ from .routes import environment, logbook, media, pages
 from .storage import InvalidRevision, MediaInventoryIncomplete, MediaRequestError, RevisionConflict, Storage, create_storage
 
 
-SELF_CACHED_ENDPOINTS = {"pages.static_files", *environment.CACHEABLE_ENDPOINTS}
+SELF_CACHED_ENDPOINTS = {"pages.static_files"}
 CACHED_MEDIA_ENDPOINTS = {"media.uploaded_file", "media.uploaded_preview_file"}
 
 
@@ -56,10 +52,6 @@ def create_app(config: AppConfig | None = None, *, storage: Storage | None = Non
     for module in (pages, logbook, media, environment):
         app.register_blueprint(module.blueprint)
     great_lakes_cache.configure(config.great_lakes_cache_dir or None)
-    great_lakes_history_client.configure(config.great_lakes_history_url or None)
-    if (config.great_lakes_background_refresh and not config.testing
-            and multiprocessing.current_process().name == "MainProcess"):
-        app.extensions["fish.great_lakes_refresher"] = GreatLakesRefresher().start()
     return app
 
 

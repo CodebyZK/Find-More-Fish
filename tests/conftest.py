@@ -59,25 +59,12 @@ def fish(tmp_path: Path) -> FishTestApp:
 
 
 @pytest.fixture(autouse=True)
-def isolated_great_lakes_cache(tmp_path_factory: pytest.TempPathFactory, monkeypatch):
-    """Keep NOAA cache files and discovered runs from leaking between tests or into the real cache."""
-    from backend import great_lakes_animation, great_lakes_cache, great_lakes_service, great_lakes_upwelling, great_lakes_volumes, great_lakes_waves
+def isolated_great_lakes_cache(tmp_path_factory: pytest.TempPathFactory):
+    """Keep local NOAA bathymetry indexes out of the real cache."""
+    from backend import great_lakes_bathymetry, great_lakes_cache
 
     great_lakes_cache.configure(tmp_path_factory.mktemp("great-lakes-cache"))
-    # Renderer fakes stay in the test process; pool-specific tests opt in.
-    monkeypatch.setenv("GREAT_LAKES_PREPARE_WORKERS", "1")
-    great_lakes_service._runs_state.clear()
-    great_lakes_service._runs_disk_checked[0] = 0.0
-    great_lakes_service._dds_cache.clear()
-    great_lakes_service._dimensions_cache.clear()
-    great_lakes_service._range_metadata_cache.clear()
-    great_lakes_volumes.clear_memory()
-    great_lakes_waves.clear_memory()
-    great_lakes_animation.clear_memory()
-    great_lakes_upwelling.clear_memory()
+    great_lakes_bathymetry.clear_memory()
     yield
-    great_lakes_service._runs_state.clear()
-    great_lakes_volumes.clear_memory()
-    great_lakes_waves.clear_memory()
-    great_lakes_animation.clear_memory()
+    great_lakes_bathymetry.clear_memory()
     great_lakes_cache.configure(None)

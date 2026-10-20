@@ -11,33 +11,6 @@ def client(tmp_path):
     return make_app(tmp_path, SECRET_KEY="cache-header-test").client
 
 
-def test_great_lakes_layers_keep_their_private_cache_policy(tmp_path) -> None:
-    with (
-        patch("backend.routes.environment.great_lakes_payload", return_value={"data": []}),
-        patch("backend.routes.environment.great_lakes_temperature_rasters", return_value={"rasters": []}),
-        patch("backend.routes.environment.great_lakes_thermocline_rasters", return_value={"rasters": []}),
-        patch("backend.routes.environment.great_lakes_model_points", return_value={"points": []}),
-    ):
-        test_client = client(tmp_path)
-        for path in (
-            "/api/great-lakes/temperature",
-            "/api/great-lakes/currents",
-            "/api/great-lakes/temperature-raster",
-            "/api/great-lakes/thermocline-raster",
-            "/api/great-lakes/model-points?kind=currents&south=41&west=-83&north=42&east=-82",
-        ):
-            response = test_client.get(path)
-            assert response.status_code == 200, path
-            assert response.headers["Cache-Control"] == "private, max-age=600", path
-
-
-def test_great_lakes_errors_and_other_routes_stay_no_store(tmp_path) -> None:
-    test_client = client(tmp_path)
-
-    assert test_client.get("/api/great-lakes/temperature?depth=deep").headers["Cache-Control"] == "no-store"
-    assert test_client.get("/healthz").headers["Cache-Control"] == "no-store"
-
-
 @pytest.mark.parametrize("preview", [False, True])
 def test_local_media_is_privately_cached_and_revalidates(tmp_path, preview) -> None:
     fish = make_app(tmp_path)
@@ -82,10 +55,3 @@ def test_cloud_media_uses_the_same_private_cache_policy(tmp_path, preview) -> No
     assert response.data == b"sample-image"
     assert response.headers["Cache-Control"] == "private, max-age=3600"
     assert response.headers["ETag"] == '"sample-etag"'
-
-
-def test_live_station_readings_are_never_cached(tmp_path) -> None:
-    with patch("backend.routes.environment.great_lakes_observations", return_value={"stations": []}):
-        response = client(tmp_path).get("/api/great-lakes/observations")
-    assert response.status_code == 200
-    assert response.headers["Cache-Control"] == "no-store"

@@ -51,6 +51,7 @@ def app_page() -> Response:
             "index.html",
             initial_theme="dark" if theme == "dark" else "light",
             database_error=database_error,
+            great_lakes_api_url=current_app.extensions["fish.config"].great_lakes_api_url,
         ),
         mimetype="text/html",
     )

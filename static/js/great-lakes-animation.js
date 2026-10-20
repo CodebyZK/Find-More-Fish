@@ -22,7 +22,7 @@ import {
   waveParticleFields, savedWindParticleColor, windParticleColorParts
 } from "./great-lakes-conditions.js";
 import { createPaletteFilter, fitPaletteToView, paletteOverlays } from "./great-lakes-palette.js";
-import { createThermoclineFlow } from "./thermocline-flow.js";
+import { createScalarRasterTransition } from "./thermocline-flow.js";
 
 // Forecast animation: the chosen layer stepped through the next five days
 // (48 hours for waves),
@@ -37,9 +37,11 @@ import { createThermoclineFlow } from "./thermocline-flow.js";
 export const ANIMATION_SPEEDS = Object.freeze({
   slow: { label: "0.5×", frameMs: 2800 },
   normal: { label: "1×", frameMs: 1400 },
-  fast: { label: "2×", frameMs: 700 }
+  fast: { label: "2×", frameMs: 700 },
+  faster: { label: "3×", frameMs: 467 },
+  fastest: { label: "4×", frameMs: 350 }
 });
-const ANIMATION_SPEED_CYCLE = ["normal", "fast", "slow"];
+const ANIMATION_SPEED_CYCLE = ["normal", "fast", "faster", "fastest", "slow"];
 export const ANIMATION_FADE_SHARE = 1;
 export const ANIMATION_SPEED_STORAGE_KEY = "glc.AnimationSpeed";
 export const ANIMATION_POLL_MS = 1500;
@@ -74,7 +76,11 @@ const state = {
   fadeTimer: null,
   // Every frame's colours fit what is on screen across all frames (great-lakes-palette.js).
   paletteFit: null,
-  thermoclineFlow: null,
+  rasterTransition: null,
+  preparedRasterTransition: null,
+  rasterPayloads: [],
+  paletteFilter: null,
+  rasterStyle: null,
   stack: 0,
   particles: null,
   arrows: null,
@@ -285,8 +291,15 @@ export function clearGreatLakesAnimationVisuals() {
   state.previousWaveArrows = null;
   state.paletteFit?.stop();
   state.paletteFit = null;
-  state.thermoclineFlow?.remove();
-  state.thermoclineFlow = null;
+  const rasterTransition = state.rasterTransition;
+  const preparedRasterTransition = state.preparedRasterTransition;
+  rasterTransition?.remove();
+  state.rasterTransition = null;
+  if (preparedRasterTransition?.transition !== rasterTransition) preparedRasterTransition?.transition?.remove();
+  state.preparedRasterTransition = null;
+  state.rasterPayloads = [];
+  state.paletteFilter = null;
+  state.rasterStyle = null;
   state.overlays = [];
 }
 
@@ -368,12 +381,7 @@ export async function loadGreatLakesAnimation(map, { layer, depth, signal, isCur
       return payload;
     });
     if (!isCurrent()) return false;
-    const thermoclineFlow = layer === "thermocline" ? await createThermoclineFlow(payloads, {
-      pane: ANIMATION_PANE, interactive: false, className: "great-lakes-thermocline-raster great-lakes-animation-frame"
-    }).catch(() => null) : null;
-    if (!isCurrent()) { thermoclineFlow?.remove(); return false; }
     clearGreatLakesVisuals();
-    state.thermoclineFlow = thermoclineFlow;
     state.layer = layer;
     state.depth = Number(depth) || 0;
     state.frames = index.frames;
@@ -386,7 +394,12 @@ export async function loadGreatLakesAnimation(map, { layer, depth, signal, isCur
     state.backgroundPayloads = temperatureIndex
       ? index.frames.map((frame) => temperaturePayloads.get(Number(frame.forecastHour)) || null)
       : null;
+    state.index = shownTime ? nearestFrameIndex(state.frames, shownTime) : 0;
     buildFrames(map, background);
+    if (state.playing && state.frames.length > 1) {
+      await prepareScalarRasterTransition(state.index, (state.index + 1) % state.frames.length);
+      if (!isCurrent()) return false;
+    }
     const first = state.payloads[0]?.metadata || {};
     if (layer === "temperature") setTemperatureLegendRange(first);
     else if (layer === "thermocline") setThermoclineLegendRange(first);
@@ -397,7 +410,6 @@ export async function loadGreatLakesAnimation(map, { layer, depth, signal, isCur
       setCurrentSpeedMax(first);
       if (state.backgroundPayloads) setTemperatureLegendRange(state.backgroundPayloads[0]?.metadata || {});
     }
-    state.index = shownTime ? nearestFrameIndex(state.frames, shownTime) : 0;
     showFrame(state.index, { fade: false });
     const shownMetadata = state.payloads[state.index]?.metadata || {};
     announceGreatLakesLayer(layer, shownMetadata, state.backgroundPayloads?.[state.index]?.metadata || (layer === "temperature" ? shownMetadata : null));
@@ -441,15 +453,15 @@ function buildFrames(map, background) {
   applyFadeDuration();
   state.stack = 0;
   const filter = createPaletteFilter();
-  state.overlays = state.thermoclineFlow ? [] : state.payloads.map((_, index) => paletteOverlays(rasterPayloads?.[index]?.rasters, filter, {
+  state.rasterPayloads = rasterPayloads || [];
+  state.paletteFilter = filter;
+  state.rasterStyle = style;
+  state.overlays = state.payloads.map((_, index) => paletteOverlays(rasterPayloads?.[index]?.rasters, filter, {
     pane: ANIMATION_PANE, opacity: 0, interactive: false, className: `${style.className} great-lakes-animation-frame`
   }).map((overlay) => overlay.addTo(greatLakesConditionsLayer)));
-  state.thermoclineFlow?.addTo(greatLakesConditionsLayer);
   const frameRasters = state.payloads.map((_, index) => rasterPayloads?.[index]?.rasters || []);
   state.paletteFit = fitPaletteToView(map, frameRasters, kind, filter, (low, high) => {
     showPaletteRange(kind, low, high);
-    state.thermoclineFlow?.setRange(low, high);
-    if (state.thermoclineFlow && !state.playing) state.thermoclineFlow.show(state.index);
   });
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (layer === "waves") {
@@ -481,6 +493,95 @@ function setMarkerGroupOpacity(group, opacity) {
   group?.eachLayer((marker) => marker.setOpacity(opacity));
 }
 
+function hasScalarRasterFrame(index) {
+  return Boolean((state.rasterPayloads[index]?.rasters || []).some((raster) => raster.valueUrl && raster.valueRange));
+}
+
+function canInterpolateRasterPair(fromIndex, toIndex) {
+  return hasScalarRasterFrame(fromIndex) && hasScalarRasterFrame(toIndex);
+}
+
+function prepareScalarRasterTransition(fromIndex, toIndex) {
+  const active = state.rasterTransition;
+  if (active?.fromIndex === fromIndex && active?.toIndex === toIndex) return Promise.resolve(active);
+  const key = `${fromIndex}:${toIndex}`;
+  const prepared = state.preparedRasterTransition;
+  if (prepared?.key === key) return prepared.promise || Promise.resolve(prepared.transition);
+  prepared?.transition?.remove();
+
+  const record = { key, fromIndex, toIndex, promise: null, transition: null, waiting: false };
+  state.preparedRasterTransition = record;
+  record.promise = createScalarRasterTransition(
+    state.rasterPayloads[fromIndex]?.rasters || [],
+    state.rasterPayloads[toIndex]?.rasters || [],
+    {
+      pane: ANIMATION_PANE,
+      interactive: false,
+      className: `${state.rasterStyle?.className || ""} great-lakes-animation-frame`
+    },
+    state.paletteFilter
+  ).then((transition) => {
+    if (!transition) {
+      record.promise = null;
+      return null;
+    }
+    if (state.preparedRasterTransition !== record) {
+      transition.remove();
+      return null;
+    }
+    transition.fromIndex = fromIndex;
+    transition.toIndex = toIndex;
+    record.transition = transition;
+    record.promise = null;
+    return transition;
+  }).catch((error) => {
+    if (state.preparedRasterTransition === record) {
+      record.error = error;
+      record.promise = null;
+    }
+    return null;
+  });
+  return record.promise;
+}
+
+function prefetchScalarRasterTransition(fromIndex, toIndex) {
+  if (!state.frames.length || !canInterpolateRasterPair(fromIndex, toIndex)) return;
+  void prepareScalarRasterTransition(fromIndex, toIndex).catch(() => {});
+}
+
+function startScalarRasterTransition(transition, fromIndex, toIndex, duration) {
+  if (state.rasterTransition === transition) return;
+  transition.addTo(greatLakesConditionsLayer);
+  state.stack += 1;
+  transition.setZIndex(state.stack);
+  clearTimeout(state.fadeTimer);
+
+  state.overlays.forEach((overlays, index) => {
+    if (!overlays) return;
+    overlays.forEach((overlay) => greatLakesConditionsLayer.removeLayer(overlay));
+    state.overlays[index] = null;
+  });
+  const previous = state.rasterTransition;
+  state.rasterTransition = transition;
+  transition.fromIndex = fromIndex;
+  transition.toIndex = toIndex;
+  if (state.preparedRasterTransition?.transition === transition) state.preparedRasterTransition = null;
+  previous?.remove();
+  transition.transition(duration);
+  if (state.frames.length > 2) prefetchScalarRasterTransition(toIndex, (toIndex + 1) % state.frames.length);
+}
+
+function createAnimationFrameOverlays(index) {
+  const overlays = paletteOverlays(state.rasterPayloads[index]?.rasters, state.paletteFilter, {
+    pane: ANIMATION_PANE,
+    opacity: 0,
+    interactive: false,
+    className: `${state.rasterStyle?.className || ""} great-lakes-animation-frame`
+  });
+  overlays.forEach((overlay) => overlay.addTo(greatLakesConditionsLayer));
+  return overlays;
+}
+
 // Animate the image element directly so every forecast layer, including the
 // transparent upwelling rasters, follows the same frame clock in every browser.
 function animateOverlayOpacity(overlay, target, durationMs = 0) {
@@ -505,15 +606,19 @@ function animateOverlayOpacity(overlay, target, durationMs = 0) {
 
 // Other forecast layers fade the new image over the one on screen.
 function crossfadeTo(index, fade) {
-  if (state.thermoclineFlow) {
-    const duration = fade ? speedTiming().fadeMs : 0;
-    if (duration && state.index !== index) state.thermoclineFlow.transition(state.index, index, duration);
-    else state.thermoclineFlow.show(index);
-    return;
+  if (state.rasterTransition) {
+    if (state.rasterTransition.toIndex === index && state.playing) {
+      state.rasterTransition.show(1);
+      return;
+    }
+    if (state.rasterTransition.toIndex === index && state.rasterTransition.progress >= 0.999) return;
+    state.rasterTransition.remove();
+    state.rasterTransition = null;
   }
+  if (!state.overlays[index]) state.overlays[index] = createAnimationFrameOverlays(index);
   // Older payloads without value rasters keep thermocline brightness stable
   // by switching without fading.
-  if (state.layer === "thermocline") fade = false;
+  if (state.layer === "thermocline" && !canInterpolateRasterPair(state.index, index)) fade = false;
   const pane = state.map?.getPane(ANIMATION_PANE);
   // Flush the starting opacity before enabling the transition, including at
   // the loop boundary where this image has already been shown before.
@@ -588,9 +693,40 @@ function scheduleNextFrame(frameAlreadyShown = false) {
   state.sliderFrame = null;
   if (!state.playing || state.frames.length < 2) return;
   if (document.hidden) return;
+  const current = state.index;
   const { frameMs, fadeMs } = speedTiming();
-  const next = (state.index + 1) % state.frames.length;
+  const next = (current + 1) % state.frames.length;
   if (!frameAlreadyShown) showFrame(state.index, { fade: false });
+  let scalarTransitionStarted = false;
+  if (fadeMs && canInterpolateRasterPair(current, next)) {
+    const active = state.rasterTransition;
+    if (active?.fromIndex === current && active?.toIndex === next) {
+      scalarTransitionStarted = true;
+    } else {
+      let prepared = state.preparedRasterTransition;
+      if (prepared?.key !== `${current}:${next}`) {
+        void prepareScalarRasterTransition(current, next);
+        prepared = state.preparedRasterTransition;
+      }
+      if (prepared?.transition) {
+        startScalarRasterTransition(prepared.transition, current, next, frameMs);
+        scalarTransitionStarted = true;
+      } else if (prepared?.promise) {
+        if (!prepared.waiting) {
+          prepared.waiting = true;
+          void prepared.promise.then((transition) => {
+            prepared.waiting = false;
+            if (!state.playing || state.index !== current) {
+              transition?.remove();
+              return;
+            }
+            scheduleNextFrame(frameAlreadyShown);
+          });
+        }
+        return;
+      }
+    }
+  }
   const slider = document.querySelector("[data-gl-frame]");
   if (slider) slider.step = "any";
   if (fadeMs && slider) {
@@ -608,7 +744,7 @@ function scheduleNextFrame(frameAlreadyShown = false) {
   // Begin blending immediately; hand off to the next frame when the blend
   // finishes, then start the following blend without a hold between frames.
   if (fadeMs) {
-    if (state.layer !== "wind" && (state.layer !== "thermocline" || state.thermoclineFlow)) crossfadeTo(next, true);
+    if (state.layer !== "wind" && !scalarTransitionStarted) crossfadeTo(next, true);
     const payload = state.payloads[next] || {};
     if (state.layer === "wind") state.particles?.setFields(windParticleFields(payload.points || []), { durationMs: frameMs });
     if (state.layer === "currents") state.particles?.setFields(payload.fields || [], { durationMs: frameMs });

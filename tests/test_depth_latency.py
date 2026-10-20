@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from backend import bathymetry_service as bathymetry, great_lakes_cache as cache, great_lakes_service as service
+from backend import bathymetry_service as bathymetry, great_lakes_bathymetry as service, great_lakes_cache as cache
 
 
 @pytest.fixture(autouse=True)

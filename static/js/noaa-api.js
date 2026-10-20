@@ -1,106 +1,193 @@
-// NOAA Great Lakes API client. Endpoint details stay separate from Leaflet UI.
+// Great Lakes Trolling public API client. Keep endpoint paths aligned with the
+// mobile client's src/services/great-lakes/api.ts.
 
-// Saved past samples ("Past 90 days") come from the Great Lakes Trolling site,
-// which records them; the desktop server passes these requests on.
-async function historyJson(path, params, signal) {
-  const response = await fetch(`/api/great-lakes/history${path}?${new URLSearchParams(params)}`, { signal });
-  if (!response.ok) throw new Error(`Saved Great Lakes conditions request failed (${response.status})`);
+const DEFAULT_API_BASE = "https://greatlakestrolling.com";
+
+function apiBase() {
+  const configured = document.documentElement.dataset.greatLakesApi?.trim();
+  return (configured || DEFAULT_API_BASE).replace(/\/+$/, "");
+}
+
+function apiUrl(path) {
+  if (/^https?:\/\//i.test(path)) return path;
+  const base = apiBase();
+  return path.startsWith("/api/") ? `${base}${path}` : `${base}/api/v1${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function queryString(values) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(values || {})) {
+    if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+  }
+  return query.toString();
+}
+
+function withQuery(path, values) {
+  const query = queryString(values);
+  return query ? `${path}?${query}` : path;
+}
+
+async function get(path, signal) {
+  const response = await fetch(apiUrl(path), {
+    signal,
+    headers: { Accept: "application/json" }
+  });
+  if (!response.ok) throw new Error(`Great Lakes API request failed (${response.status})`);
   return response.json();
+}
+
+function absoluteApiUrl(value) {
+  if (!value || /^https?:\/\//i.test(value) || value.startsWith("data:")) return value;
+  return apiUrl(value);
+}
+
+function normalizePayload(payload) {
+  if (!payload || typeof payload !== "object") return payload;
+  return {
+    ...payload,
+    rasters: Array.isArray(payload.rasters) ? payload.rasters.map((raster) => ({
+      ...raster,
+      imageUrl: absoluteApiUrl(raster.imageUrl),
+      valueUrl: absoluteApiUrl(raster.valueUrl),
+      mixedUrl: absoluteApiUrl(raster.mixedUrl)
+    })) : payload.rasters
+  };
+}
+
+function forecastPointParams(options = {}) {
+  return {
+    latitude: options.latitude,
+    longitude: options.longitude,
+    forecastHour: options.forecastHour,
+    depth: options.depth ?? 0
+  };
+}
+
+function profileParams(options = {}) {
+  return {
+    latitude: options.latitude,
+    longitude: options.longitude,
+    forecastHour: options.forecastHour
+  };
+}
+
+async function pointReading(options = {}, time = options.time) {
+  const params = forecastPointParams(options);
+  if (time) {
+    delete params.forecastHour;
+    params.time = time;
+  }
+  return get(withQuery(time ? "/history/point" : "/point", params), options.signal);
 }
 
 export function setup() {
   window.noaaGreatLakesApi = {
-    async conditions({ layer, forecastHour, depth, resolution, models, targetC, selection, dataVersion = "", time, signal }) {
-      if (time) return historyJson(`/layers/${encodeURIComponent(layer)}`, { time }, signal);
-      // dataVersion changes when NOAA publishes a run or "Now" advances an
-      // hour, so the browser's HTTP cache never serves an older frame.
-      const query = new URLSearchParams({ forecastHour, depth, resolution, models, data: dataVersion });
-      if (layer === "target-temperature") { query.set("targetC", targetC); query.set("selection", selection); }
-      const endpoint = layer === "wind" || layer === "target-temperature" ? `/api/great-lakes/${layer}?${query}` : layer === "temperature" ? `/api/great-lakes/temperature-raster?${query}` : layer === "thermocline" ? `/api/great-lakes/thermocline-raster?${query}` : layer === "waves" ? `/api/great-lakes/waves-raster?${query}` : layer === "upwelling" ? `/api/great-lakes/upwelling-raster?${query}` : `/api/great-lakes/currents?${query}`;
-      const response = await fetch(endpoint, { signal });
-      if (!response.ok) throw new Error("NOAA model request failed");
-      return response.json();
+    async conditions({ layer, forecastHour, depth, targetC, selection, time, signal }) {
+      const path = time
+        ? withQuery(`/history/layers/${encodeURIComponent(layer)}`, { time })
+        : withQuery(`/layers/${encodeURIComponent(layer)}`, {
+          forecastHour,
+          ...(["temperature", "currents"].includes(layer) ? { depth: depth ?? 0 } : {}),
+          ...(layer === "target-temperature" ? { targetC, selection } : {})
+        });
+      return normalizePayload(await get(path, signal));
     },
-    // A layer's forecast animation: frame URLs and their shared colour scale,
-    // or { ready: false, progress } while the server is still drawing them.
+
     async animation({ layer, depth, signal }) {
-      const query = new URLSearchParams(layer === "temperature" || layer === "currents" ? { depth } : {});
-      const response = await fetch(`/api/great-lakes/animation/${encodeURIComponent(layer)}?${query}`, { signal });
-      if (!response.ok) throw new Error("NOAA forecast animation is unavailable");
-      return response.json();
+      const path = withQuery(`/animation/${encodeURIComponent(layer)}`, ["temperature", "currents"].includes(layer) ? { depth: depth ?? 0 } : {});
+      const index = await get(path, signal);
+      return {
+        ...index,
+        frames: Array.isArray(index.frames) ? index.frames.map((frame) => ({ ...frame, url: absoluteApiUrl(frame.url) })) : index.frames
+      };
     },
+
     async animationFrame({ url, signal }) {
-      const response = await fetch(url, { signal });
-      if (!response.ok) throw new Error("NOAA forecast animation frame request failed");
-      return response.json();
+      return normalizePayload(await get(url, signal));
     },
-    async temperatureValue(options) {
-      if (options.time) return historyJson("/point/temperature", { time: options.time, depth: options.depth, latitude: options.latitude, longitude: options.longitude });
-      const response = await fetch(`/api/great-lakes/temperature-value?${new URLSearchParams(options)}`);
-      if (!response.ok) throw new Error("NOAA temperature lookup failed");
-      return response.json();
+
+    async temperatureValue(options = {}) {
+      const reading = await pointReading(options);
+      return reading.temperature || { available: false };
     },
-    async profile(options) {
-      if (options.time) return historyJson("/point/temperature-profile", { time: options.time, latitude: options.latitude, longitude: options.longitude });
-      const response = await fetch(`/api/great-lakes/profile?${new URLSearchParams(options)}`);
-      if (!response.ok) throw new Error("NOAA profile lookup failed");
-      return response.json();
+
+    async profile(options = {}) {
+      if (options.time) {
+        const reading = await pointReading(options);
+        return reading.profile || { available: false, values: [] };
+      }
+      return get(withQuery("/point/temperature-profile", profileParams(options)), options.signal);
     },
-    async fishingConditions(options) {
-      return historyJson("/point/fishing-conditions", { time: options.time, latitude: options.latitude, longitude: options.longitude });
+
+    async fishingConditions(options = {}) {
+      return get(withQuery("/history/point/fishing-conditions", {
+        time: options.time,
+        latitude: options.latitude,
+        longitude: options.longitude
+      }), options.signal);
     },
-    async currentProfile(options) {
-      if (options.time) return historyJson("/point/current-profile", { time: options.time, latitude: options.latitude, longitude: options.longitude });
-      const response = await fetch(`/api/great-lakes/current-profile?${new URLSearchParams(options)}`);
-      if (!response.ok) throw new Error("NOAA current profile lookup failed");
-      return response.json();
+
+    async currentProfile(options = {}) {
+      const reading = await pointReading(options);
+      return reading.currentProfile || { available: false, values: [] };
     },
-    async upwellingValue(options) {
-      if (options.time) return historyJson("/point/upwelling", { time: options.time, latitude: options.latitude, longitude: options.longitude });
-      const query = { forecastHour: options.forecastHour, latitude: options.latitude, longitude: options.longitude, models: options.models || "" };
-      const response = await fetch(`/api/great-lakes/upwelling-value?${new URLSearchParams(query)}`);
-      if (!response.ok) throw new Error("NOAA upwelling lookup failed");
-      return response.json();
+
+    async upwellingValue(options = {}) {
+      const reading = await pointReading(options);
+      return reading.upwelling || { available: false };
     },
-    async waveValue(options) {
-      if (options.time) return historyJson("/point/waves", { time: options.time, latitude: options.latitude, longitude: options.longitude });
-      const response = await fetch(`/api/great-lakes/wave-value?${new URLSearchParams(options)}`);
-      if (!response.ok) throw new Error("NOAA wave lookup failed");
-      return response.json();
+
+    async waveValue(options = {}) {
+      const reading = await pointReading(options);
+      return reading.waves || { available: false };
     },
-    async targetTemperatureValue(options) {
-      const response = await fetch(`/api/great-lakes/target-temperature-value?${new URLSearchParams(options)}`);
-      if (!response.ok) throw new Error("Target-temperature lookup unavailable");
-      return response.json();
+
+    async targetTemperatureValue(options = {}) {
+      return get(withQuery("/point/target-temperature", {
+        latitude: options.latitude,
+        longitude: options.longitude,
+        forecastHour: options.forecastHour,
+        targetC: options.targetC
+      }), options.signal);
     },
-    async windValue(options) {
-      const response = await fetch(`/api/great-lakes/wind-value?${new URLSearchParams(options)}`);
-      if (!response.ok) throw new Error("Wind lookup unavailable");
-      return response.json();
+
+    async windValue(options = {}) {
+      return get(withQuery("/point/wind", {
+        latitude: options.latitude,
+        longitude: options.longitude,
+        forecastHour: options.forecastHour
+      }), options.signal);
     },
-    async status({ models, signal } = {}) {
-      const response = await fetch(`/api/great-lakes/status?${new URLSearchParams({ models: models || "" })}`, { signal });
-      if (!response.ok) throw new Error("NOAA data status is unavailable");
-      return response.json();
+
+    async status({ signal } = {}) {
+      const manifest = await get("/manifest", signal);
+      const waves = (manifest.layers || []).filter((layer) => layer.layer === "waves");
+      const wavesVersion = waves.map((layer) => layer.hash || layer.validTime || layer.url).join("|") || manifest.version || "";
+      const runTime = waves.find((layer) => layer.validTime)?.validTime || manifest.generatedAt;
+      return {
+        version: manifest.version || manifest.generatedAt || "",
+        wavesVersion,
+        models: { api: { runTime: manifest.generatedAt } },
+        waves: { runTime }
+      };
     },
+
     async observations({ time, signal } = {}) {
-      if (time) return historyJson("/stations", { time }, signal);
-      const response = await fetch("/api/great-lakes/observations", { signal });
-      if (!response.ok) throw new Error("NOAA buoy observations are unavailable");
-      return response.json();
+      return time
+        ? get(withQuery("/history/stations", { time }), signal)
+        : get("/stations", signal);
     },
-    // Which past hours are saved, and one station's saved readings.
+
     history({ signal } = {}) {
-      return historyJson("", {}, signal);
+      return get("/history", signal);
     },
+
     stationHistory({ id, signal }) {
-      return historyJson(`/stations/${encodeURIComponent(id)}`, {}, signal);
+      return get(`/history/stations/${encodeURIComponent(id)}`, signal);
     },
-    async modelPoints({ kind, south, west, north, east, models, signal }) {
-      const query = new URLSearchParams({ kind, south, west, north, east, models });
-      const response = await fetch(`/api/great-lakes/model-points?${query}`, { signal });
-      if (!response.ok) throw new Error("NOAA model points are unavailable");
-      return response.json();
+
+    modelPoints({ kind, south, west, north, east, signal }) {
+      return get(withQuery("/model-points", { kind, south, west, north, east }), signal);
     }
   };
 }

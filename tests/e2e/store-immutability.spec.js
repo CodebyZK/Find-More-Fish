@@ -72,11 +72,16 @@ async function stubExternalApis(page) {
     contentType: "application/json",
     body: JSON.stringify({ available: false, message: "Marine unavailable in e2e" })
   }));
-  await page.route("**/api/great-lakes/**", (route) => route.fulfill({
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify({ available: false, values: [], message: "Great Lakes data unavailable in e2e" })
-  }));
+  await page.route("**/api/v1/**", (route) => {
+    const { pathname } = new URL(route.request().url());
+    let payload = { available: false, values: [], rasters: [], fields: [], data: [], arrows: [], metadata: { models: [] } };
+    if (pathname.endsWith("/manifest")) payload = { version: "e2e", generatedAt: "2026-10-01T00:00:00Z", layers: [] };
+    else if (pathname.endsWith("/stations") || pathname.includes("/history/stations")) payload = { stations: [] };
+    else if (pathname.includes("/model-points")) payload = { points: [], count: 0, limit: 6000, tooMany: false };
+    else if (pathname.endsWith("/history")) payload = { hours: [] };
+    else if (pathname.includes("/animation/")) payload = { ready: true, frames: [] };
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payload) });
+  });
 }
 
 function seededLocation() {

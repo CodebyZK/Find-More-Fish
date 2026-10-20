@@ -9,32 +9,32 @@ test("map depth popup opens the current profile on request", async ({ page }) =>
     status: 200, contentType: "application/json",
     body: JSON.stringify({ depth_ft: 306 })
   }));
-  await page.route("**/api/great-lakes/status?**", (route) => route.fulfill({
+  await page.route("**/api/v1/manifest", (route) => route.fulfill({
     status: 200, contentType: "application/json",
-    body: JSON.stringify({
-      version: "LOOFS:20260928t12z:0",
-      models: { LOOFS: { available: true, run: "20260928t12z", nowForecastHour: 0, nowValidTime: "2026-09-28T12:00:00Z", nextRunExpectedAt: "2026-09-28T20:47:00Z" } }
-    })
+    body: JSON.stringify({ version: "e2e", generatedAt: "2026-09-28T12:00:00Z", layers: [] })
   }));
-  await page.route("**/api/great-lakes/currents?**", (route) => route.fulfill({
+  await page.route("**/api/v1/layers/currents?**", (route) => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({
       data: [], fields: [],
       metadata: { models: [{ model: "LOOFS", available: true, validTime: "2026-09-28T12:00:00Z" }] }
     })
   }));
-  await page.route("**/api/great-lakes/current-profile?**", (route) => route.fulfill({
+  await page.route("**/api/v1/point?**", (route) => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({
-      available: true, model: "LOOFS", validTime: "2026-09-28T12:00:00Z",
-      sampleDistanceKm: 2.3, depthApproximate: true,
-      values: [
-        { depthMeters: 0, speedMetersPerSecond: 0.1, directionDegrees: 0 },
-        { depthMeters: 5, speedMetersPerSecond: 0.28, directionDegrees: 45 },
-        { depthMeters: 10, speedMetersPerSecond: 0.4, directionDegrees: 90 }
-      ]
+      currentProfile: {
+        available: true, model: "LOOFS", validTime: "2026-09-28T12:00:00Z",
+        sampleDistanceKm: 2.3,
+        values: [
+          { depthMeters: 0, speedMetersPerSecond: 0.1, directionDegrees: 0 },
+          { depthMeters: 5, speedMetersPerSecond: 0.28, directionDegrees: 45 },
+          { depthMeters: 10, speedMetersPerSecond: 0.4, directionDegrees: 90 }
+        ]
+      }
     })
   }));
+  await page.route("**/api/v1/stations", (route) => route.fulfill({ json: { stations: [] } }));
 
   await page.goto("/map");
   await expect(page).toHaveTitle("Fishing Logbook");

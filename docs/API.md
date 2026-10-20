@@ -1,6 +1,8 @@
 # HTTP API
 
-Base URL defaults to `http://127.0.0.1:8080`. Routes are grouped into Flask blueprints under `backend/routes/` (`pages`, `logbook`, `media`, `environment`) and reach storage only through the `LogbookStore`/`MediaStore` interfaces in `backend/storage/`. Application, API, and upload routes are unauthenticated. Mutating requests require the CSRF token returned by `GET /api/csrf-token` in the `X-CSRF-Token` header. Every Flask response includes `Cache-Control: no-store`, except `/static/` assets (Flask's default file caching), successful upload original/preview GET and HEAD responses (`private, max-age=3600`), and successful Great Lakes temperature, current, and raster layer responses (`private, max-age=600`). Upload media can be reused from the browser cache for one hour; shared proxies must not cache it. Local media supports ETag revalidation and range requests. Errors remain `no-store`. Replacing or deleting media at the same URL can leave the previous browser copy available until that hour expires or the user forces a reload. This is a desktop HTTP policy; the canonical archive format and mobile storage are unchanged.
+Base URL defaults to `http://127.0.0.1:8080`. Routes are grouped into Flask blueprints under `backend/routes/` (`pages`, `logbook`, `media`, `environment`) and reach storage only through the `LogbookStore`/`MediaStore` interfaces in `backend/storage/`. Application, API, and upload routes are unauthenticated. Mutating requests require the CSRF token returned by `GET /api/csrf-token` in the `X-CSRF-Token` header. Every Flask response includes `Cache-Control: no-store`, except `/static/` assets (Flask's default file caching) and successful upload original/preview GET and HEAD responses (`private, max-age=3600`). Upload media can be reused from the browser cache for one hour; shared proxies must not cache it. Local media supports ETag revalidation and range requests. Errors remain `no-store`. Replacing or deleting media at the same URL can leave the previous browser copy available until that hour expires or the user forces a reload. This is a desktop HTTP policy; the canonical archive format and mobile storage are unchanged.
+
+The desktop browser uses the same public `/api/v1` API as the mobile app, defaulting to `https://greatlakestrolling.com`. It requests forecast layers, points, stations, model points, animations, and history directly from that host. Set `GREAT_LAKES_API_URL` to use another compatible host. When the configured host differs from the desktop app origin, it must allow browser cross-origin requests. Flask does not proxy Great Lakes conditions or history.
 
 ## Logbook
 
@@ -82,72 +84,6 @@ Looks up Great Lakes depth for numeric latitude and longitude coordinates. It se
 
 Streams the bundled NOAA bathymetry contours for one of Erie, Huron, Michigan, Ontario, or Superior as GeoJSON. Optional `detail=6|9|12|full` selects geometry simplified for the map zoom; the default is `full`, and invalid detail values return 400. Optional `detail=6|9|12|full` selects geometry simplified for the map zoom; the default is `full`, and invalid detail values return 400. The desktop map loads only contours that intersect the current view and caches the parsed layer in memory for later pans.
 
-### `GET /api/great-lakes/temperature-value`
-
-Returns a modelled Great Lakes water-temperature value for numeric `forecastHour`, `depth`, `resolution`, `latitude`, and `longitude` query values. `forecastHour` is snapped to `0`, `6`, `12`, `24`, or `48` and counts from the current hour: `0` ("Now") is the newest complete NOAA run's frame nearest the present, not the run's start, and every Great Lakes route uses the same rule. Depth is bounded to 0–316.992 meters (1,040 ft) and snapped to the nearest NOAA depth level; resolution is bounded to 128–512 pixels. An optional comma-separated `models` list selects known NOAA models.
-
-### `GET /api/great-lakes/profile`
-
-Returns the modelled water-column temperature profile and estimated thermocline for numeric `forecastHour`, `latitude`, and `longitude`, with the same optional `models` selection. A thermocline can start at the 2 m model level (about 7 ft); its comparison uses water at 1 m (about 3 ft) as a reference to disregard a sun-warmed surface skin.
-
-### `GET /api/great-lakes/<layer>`
-
-Returns the current model payload for `temperature` or `currents`. The optional `forecastHour`, `depth`, and `models` query values select the model view.
-
-The currents payload includes sampled `data` points and, when the NOAA run has a regular velocity grid, interpolatable `fields` plus speed-shading `rasters`. Each field carries a compact `waterMask` with the native FVCOM boundary rings and a regular-grid fallback mask. A run with only unstructured FVCOM fields can return sampled currents with empty `fields` and `rasters` arrays; the map then shows static arrows.
-
-### `GET /api/great-lakes/current-profile`
-
-Returns modeled current speed and flow direction at each available water-column layer near numeric `latitude` and `longitude`. Optional `forecastHour` and comma-separated `models` select the forecast. An available response contains `model`, `validTime`, `requested`, `modelLocation`, `sampleDistanceKm`, `depthApproximate`, and shallow-to-deep `values`. Each value has `depthMeters`, eastward `u` and northward `v` in m/s, `speedMetersPerSecond`, and `directionDegrees` (the direction water flows, clockwise from north). FVCOM sigma-layer depths are estimated from nearby model bathymetry. A point without usable nearby data returns `{ "available": false }`; unstructured model faces more than 25 km away are excluded. The Map requests this endpoint when **View current profile** is pressed in the depth popup.
-
-### `GET /api/great-lakes/temperature-raster`
-
-Returns a server-rendered temperature raster payload for the optional `forecastHour`, `depth`, `resolution`, and `models` query values. Each raster is an RGBA image (`imageUrl` data URL, WebP when available) warped to Web Mercator and clipped to the native FVCOM boundary when available, with a regular-grid water-mask fallback; all lakes in one response share the colour range reported as `metadata.minC`/`metadata.maxC`.
-
-Animation requests (`animation=1`) use the shared animation colour range and return `valueUrl` without the redundant `imageUrl`. Ordinary layer requests still include both images. The browser colours animation value images from their `valueRange`; a client that needs a ready-coloured image can request the ordinary layer at the same forecast hour.
-
-At depth, temperature and current layers cover only water at least that deep: shallower areas are transparent and outside each current field's `waterMask`. A lake whose deepest model level is shallower than the requested depth has no raster or field, and its `metadata.models[]` entry has `tooShallow: true` and `maxDepthMeters`. The profile and current-profile lookups read the nearest wet cell of the model volume the server already keeps on disk when there is one, so map clicks answer in tens of milliseconds.
-
-### `GET /api/great-lakes/thermocline-raster`
-
-Returns a server-rendered thermocline-depth raster payload for the optional `forecastHour`, `resolution`, and `models` query values. Rasters are rendered like temperature rasters and share the range in `metadata.minDepthMeters`/`metadata.maxDepthMeters` (the 2nd–98th percentile, so outliers do not flatten the colours); water mixed top to bottom, without a thermocline, is drawn in `metadata.mixedColor`.
-
-### `GET /api/great-lakes/upwelling-raster`
-
-Returns the upwelling/downwelling evidence layer for the optional `forecastHour`, `resolution`, and `models`. `metadata.minScore`/`maxScore` give the fixed dimensionless ±8 evidence-index range, `scoreUnits` is `dimensionless`, and `threshold` is the minimum evidence index. The per-model metadata includes valid time, whether a day-before comparison was available, the comparison source, and marked-cell counts.
-
-### `GET /api/great-lakes/upwelling-value`
-
-Returns point evidence for required `latitude` and `longitude` and optional `forecastHour`/`models`: `kind`, `evidenceIndex`, qualitative `confidence`, `assessment`, surface and nearby temperatures, raw and background-adjusted 24-hour temperature changes, thermocline displacement, and whether a day-before comparison was available. Downwelling requires a deeper thermocline; surface warmth alone does not qualify.
-
-### `GET /api/great-lakes/waves-raster`
-
-Returns the NOAA GLWU wave layer for the optional `forecastHour`, `resolution`, and `models` query values. `rasters` holds one significant-wave-height image per lake, rendered like temperature rasters and clipped to the same water mask, sharing the fixed 0–4 m range. `arrows` lists wave-model cells (every 4th cell, about 10 km apart) with `latitude`, `longitude`, `heightMeters`, `periodSeconds`, and `directionDegrees` (the direction waves come from, degrees true). `metadata` also reports the wave `run`, `selectedForecastHour`, and `validTime`. If a complete current forecast is unavailable, a saved complete frame may be returned with `metadata.availability.state: "fallback"`, `lastGoodAt`, and an error; without a saved frame, rasters are empty and every model is `available: false`.
-
-### `GET /api/great-lakes/wave-value`
-
-Returns the modelled waves at required `latitude` and `longitude` for the optional `forecastHour`: `available`, `heightMeters`, `periodSeconds`, `directionDegrees` (from the nearest wave-model cell), `validTime`, `run`, and `source`. Points just inside the shoreline use the nearest water cell; points off the lakes return `available: false`.
-
-### `GET /api/great-lakes/status`
-
-Reports what the server is serving for the optional comma-separated `models`: `generatedAt`, a `version` string that changes when a new NOAA run is used or "Now" advances an hour, per-model `run`, `runTime`, `nowForecastHour`, `nowValidTime`, and `nextRunExpectedAt`, the same fields for the hourly wave model in `waves` with its own `wavesVersion`, and the background refresher's last activity and errors in `refresher`. Never cached. Layer requests may include `data=<version>`; the server ignores it, but it gives each data version its own browser-cache entry.
-
-### `GET /api/great-lakes/observations`
-
-Returns live measurements from NOAA National Data Buoy Center stations in the Great Lakes region (buoys and shore gauges): `generatedAt`, `source`, and `stations`, each with `id`, `name`, `owner`, `type` (`Buoy` or `Shore station`), `latitude`, `longitude`, NDBC `url`, `waterTemperature` (`temperatureC`, `observedAt`) or `null`, `waves` (`heightMeters`, `periodSeconds`, `directionDegrees` waves come from, `observedAt`) or `null`, and `current` or `null`. A current is the newest current-meter profile: `observedAt` and `values` with `depthMeters`, `directionDegrees` (the bearing the water flows toward), and `speedMetersPerSecond`. Only stations with a reading from the last 6 hours are included. Readings are fetched live from NDBC on every request and never cached (about 400 KB: only the newest 4 KB of each current-meter file is downloaded); if NDBC is unreachable the route returns 503 with an empty `stations` list.
-
-### `GET /api/great-lakes/model-points`
-
-Returns the forecast model's calculation points inside required numeric `south`, `west`, `north`, and `east` bounds. `kind=temperature` (default) returns FVCOM mesh nodes; `kind=currents` returns triangle centres, where the model computes velocity; `kind=waves` returns the GLWU wave model's 2.5 km water cells (and ignores `models`). Optional comma-separated `models` selects lakes. The response contains `kind`, `count`, `limit`, `tooMany`, per-model availability in `models`, and `points` as a flat `[latitude, longitude, …]` array. Points are never thinned: when `count` exceeds `limit`, `tooMany` is `true` and `points` is empty so the client can ask the user to zoom in. Each model's mesh is downloaded once per server process.
-
-### `GET /api/great-lakes/shoreline`
-
-Returns cached native FVCOM shoreline rings for each Great Lakes model. The
-desktop map uses these rings to clip wave and wind particles to modeled water;
-the same mesh boundaries clip server-rendered overlays. The first request may
-download static mesh coordinates and triangle connectivity from NOAA. If those
-fields are unavailable, map flow stays hidden rather than crossing land.
-
 ## Uploads and Media
 
 Allowed categories: `catch-photos`, `trip-photos`, `lures`, `flashers`, `reels`, `rods`, `queue`.
@@ -198,10 +134,6 @@ Deletes a non-queue upload only when it exists and is not referenced. Returns 40
 
 Files are served from their category paths. Category validation occurs through the media path helper.
 
-### Great Lakes historical fishing conditions
-
-GET `/api/great-lakes/history/point/fishing-conditions?time=<ISO-8601>&latitude=<degrees>&longitude=<degrees>` proxies one historical sample from GreatLakesTrolling. It returns temperature readings and the thermocline NOAA derives from the profile, plus the underwater current profile and nearest model-cell location. The desktop server forwards this request to the configured GREAT_LAKES_HISTORY_URL; the site retains full-depth temperature and current profiles for 90 days.
-
 ## SPA and Static Routes
 
 - `/`, `/trips`, `/expeditions`, `/bests`, `/stats`, `/leaderboard`, `/map`, `/gear`, `/gallery`, `/checklists`, `/wiki`, and `/settings` render `templates/index.html` and its feature partials. `/` selects the Trips view.
@@ -209,45 +141,6 @@ GET `/api/great-lakes/history/point/fishing-conditions?time=<ISO-8601>&latitude=
 - `/favicon.ico` returns 204.
 
 
-Thermocline and current layer metadata may include availability with state
-(fallback, waiting, or error), missingModels, outageSeconds, errorAfterSeconds,
-and lastGoodAt when available. Thermocline fallback retains its saved layer's
-original valid time. When a complete current map is cached, a current fallback
-retains that map's original valid times and identifies the lakes that could not
-be refreshed. Layer model metadata includes the NOAA run identifier; the apps
-show its generation time in local time. Delayed responses use no-store. Status
-versions are opaque and can change as additional forecast hours arrive within
-the same NOAA cycle.
+### Bathymetry indexes
 
-### October 10 Great Lakes port
-
-NOAA HTTP 502 responses are retried up to 80 times within one hour; other HTTP errors fail immediately. Shared disk locks prevent separate desktop workers from downloading the same volumes or rendering the same payload concurrently. Renderer caches reuse projection, fill plans, palettes, and shoreline alpha with bounded memory. The status response's `refresher` includes `renderCycleStartedAt`, `renderCycleFinishedAt`, `renderCycleDurationSeconds`, and `renderCycleState` (`running` or `finished`); a finished attempt may still have individual errors.
-
-The map shows point depth and layer readings as each becomes available. Its layer payload cache keeps at most 12 entries for ten minutes. Current particle density offers Low, Medium, High, and Very High.
-
-### October 10 Great Lakes port
-
-NOAA HTTP 502 responses are retried up to 80 times within one hour; other HTTP errors fail immediately. Shared disk locks prevent separate desktop workers from downloading the same volumes or rendering the same payload concurrently. Renderer caches reuse projection, fill plans, palettes, and shoreline alpha with bounded memory. The status response's `refresher` includes `renderCycleStartedAt`, `renderCycleFinishedAt`, `renderCycleDurationSeconds`, and `renderCycleState` (`running` or `finished`); a finished attempt may still have individual errors.
-
-The map shows point depth and layer readings as each becomes available. Its layer payload cache keeps at most 12 entries for ten minutes. Current particle density offers Low, Medium, High, and Very High.
-
-The desktop Docker image includes the bundled contour assets and prepares their indexes during its build. Local installations can prepare the same indexes with `.venv\Scripts\python.exe scripts/prepare-depth-indexes.py`; generated indexes live under `static/data/depth-indexes/` and stay outside the private logbook data directory.
-
-### Target-temperature and wind forecasts (2026-10-11 port)
-
-`GET /api/great-lakes/target-temperature?forecastHour=6&targetC=10&selection=deepest`
-returns matching-depth rasters, their automatic depth range, and the surface
-temperature range across available lakes. `targetC` is finite Celsius from 0
-through 30; `selection` is `shallowest` or `deepest`. Invalid parameters and
-`animation=1` return 400. Clear cells have no match. The corresponding
-`/target-temperature-value` endpoint accepts `latitude`, `longitude`,
-`forecastHour`, and `targetC`, and returns every crossing or flat matching band,
-without extrapolating, crossing missing levels, or looking below the bottom.
-
-`GET /api/great-lakes/wind?forecastHour=6` returns NOAA GFS 10 m wind vectors,
-speeds, gusts, directions, and run/valid-time metadata. `/wind-value` accepts
-coordinates and the forecast hour for a point reading. `/animation/wind` returns
-frame URLs anchored to one base valid time; those URLs carry `animation=1` and
-`data` so delayed frame loads keep the animation's time. Wind model points use
-`/model-points?kind=wind` with the existing bounds parameters. NOAA wind failures
-return 503 with `Cache-Control: no-store`. Neither new layer has saved history.
+The Docker image includes bundled NOAA contour assets and prepares their local indexes during the image build. Local installations can prepare the same indexes with `.venv\Scripts\python.exe scripts/prepare-depth-indexes.py`; generated indexes live under `static/data/depth-indexes/` outside the private logbook data directory.
