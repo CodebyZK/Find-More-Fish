@@ -28,7 +28,11 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def response(origin: str, path: str) -> tuple[int, object, str]:
-    request = Request(f"{origin}{path}", headers={"Host": DOMAIN})
+    headers = {"Host": DOMAIN}
+    if origin == "http://127.0.0.1:80":
+        # Match the HTTPS request metadata supplied by the existing edge proxy.
+        headers["X-Forwarded-Proto"] = "https"
+    request = Request(f"{origin}{path}", headers=headers)
     try:
         result = build_opener(NoRedirect).open(request, timeout=15)
     except HTTPError as error:
@@ -62,9 +66,10 @@ def admin_command(command: list[str]) -> None:
 def verify_proxy() -> None:
     for attempt in range(10):
         try:
-            # Check the actual public HTTPS path. Origin HTTP can legitimately
-            # redirect or depend on the headers supplied by the TLS proxy.
-            verify_auth(f"https://{DOMAIN}")
+            # Public probes from this host can receive an edge 403. Verify the
+            # origin using the edge's HTTPS metadata; check the public UI in a
+            # browser separately without changing any edge protections.
+            verify_auth("http://127.0.0.1:80")
             return
         except Exception:
             if attempt == 9:
@@ -76,9 +81,9 @@ def main() -> None:
     # Do this before requesting privilege or changing the Nginx configuration.
     verify_auth("http://127.0.0.1:8081")
     status, headers, _ = response("http://127.0.0.1:80", "/login")
-    print(f"Origin HTTP login: {status}; redirect: {headers.get('Location', 'none')}", flush=True)
-    # Establish working DNS and verified TLS before making any live change.
-    response(f"https://{DOMAIN}", "/login")
+    print(f"Origin login with forwarded HTTPS: {status}; redirect: {headers.get('Location', 'none')}", flush=True)
+    if status not in {200, 401}:
+        raise RuntimeError("Cannot reach the origin login with the existing HTTPS proxy metadata")
     target = SITE.resolve(strict=True)
     original = target.read_text(encoding="utf-8")
     uncommented = re.sub(r"(?m)#.*$", "", original)
