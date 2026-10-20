@@ -183,6 +183,21 @@ deploy_production:
       fi
       REMOTE_SCRIPT
 
+# Reuse the existing production SSH connection for read-only proxy diagnostics.
+# This job is optional and never counts as a production deployment.
+website_proxy_inspection:
+  extends: deploy_production
+  needs: []
+  environment:
+    name: production
+    action: verify
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "Website"'
+      when: manual
+      allow_failure: true
+  script:
+    - ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" /bin/sh -s < website/scripts/inspect-proxy.sh
+
 deploy_cloudflare_worker:
   stage: .post
   image: node:22-alpine
