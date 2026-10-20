@@ -1,6 +1,7 @@
 """Run OAuth deployment preparation with dummy credentials and no network access."""
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,7 @@ pytestmark = pytest.mark.skipif(SHELL is None, reason="POSIX shell required")
 
 def prepare(tmp_path, **overrides):
     ci = (ROOT / "website/ci.yml").read_text(encoding="utf-8")
-    deploy = ci.split("deploy_production:", 1)[1].split("deploy_cloudflare_worker:", 1)[0]
+    deploy = re.search(r"(?ms)^deploy_production:\n(.*?)(?=^\S|\Z)", ci).group(1)
     script = textwrap.dedent(deploy.split("  script:\n    - |\n", 1)[1])
     preparation = script.split("scp -o BatchMode=yes", 1)[0]
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GITLAB_")}
