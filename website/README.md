@@ -91,3 +91,20 @@ Use production environment scope. If variables are protected, Website must be a
 protected branch. The deploy job reports all missing OAuth variables before
 contacting the production host. It writes credentials only to the private OAuth
 environment file. Keep client secrets out of repository files and chat messages.
+
+## Public login and Nginx
+
+The Website Compose overlay binds port 8081 to localhost. Nginx remains the public
+proxy; HTTPS continues to be provided by the existing Cloudflare/proxy setup.
+After the container becomes healthy, deployment runs scripts/configure-proxy.py
+on the host. It verifies the configured GitLab login and signed-out protections
+before disabling Basic Auth in /etc/nginx/sites-enabled/fish.zionkoudijs.com.
+The script refuses a site config serving any other domain. It saves a private
+backup outside the checkout, validates Nginx before reloading, and restores the
+previous config if the reload or authentication checks fail. The deployment
+account needs write permission for that site (or existing noninteractive sudo
+permission), plus permission to validate and reload Nginx. No credentials or
+logbook data are read by this operation.
+
+The optional website_proxy_inspection CI job checks the local upstream and lists
+routing/authentication directives using the existing deployment connection.

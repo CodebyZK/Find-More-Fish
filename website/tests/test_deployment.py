@@ -28,6 +28,7 @@ def test_remote_deploy_preserves_failure_and_reports_diagnostics(
     # failing after startup has already failed. mkdir operates only in tmp_path.
     stubs = r'''
 git() { printf 'git %s\n' "$*"; }
+python3() { printf 'python3 %s\n' "$*"; }
     docker() {
       printf 'docker %s\n' "$*" >&2
       if [ "$1" = compose ]; then shift 5; set -- compose "$@"; fi

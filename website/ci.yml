@@ -181,6 +181,7 @@ deploy_production:
         done
         exit "$deploy_status"
       fi
+      python3 website/scripts/configure-proxy.py
       REMOTE_SCRIPT
 
 # Reuse the existing production SSH connection for read-only proxy diagnostics.

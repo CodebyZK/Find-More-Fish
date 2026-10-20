@@ -1,5 +1,8 @@
 services:
   selfhostable-fishing-logbook:
+    # Nginx owns public HTTPS; the authenticated app is reachable only locally.
+    ports: !override
+      - "127.0.0.1:${APP_PORT:-8081}:8080"
     build:
       args:
         APP_EXTENSION: website
