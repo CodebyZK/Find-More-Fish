@@ -16,18 +16,21 @@ from zipfile import ZipFile
 from PIL import Image
 
 from backend.backend_config import DEFAULT_LOGBOOK
-from server import create_app
+from backend.app_factory import create_app
+from backend.config import AppConfig
 
 
 class GitLabAuthTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.app = create_app({
-            "TESTING": True,
-            "SECRET_KEY": "test-only-gitlab-session-key",
-            "AUTH_REQUIRED": True,
-            "AUTH_DATA_DIR": Path(self.directory.name),
+        self.app = create_app(AppConfig(
+            data_dir=Path(self.directory.name),
+            testing=True,
+            auth_required=True,
+            secret_key="test-only-gitlab-session-key",
+        ))
+        self.app.config.update({
             "GITLAB_CLIENT_ID": "client-id",
             "GITLAB_CLIENT_SECRET": "client-secret",
             "GITLAB_REDIRECT_URI": "http://localhost/auth/gitlab/callback",
@@ -94,6 +97,54 @@ class GitLabAuthTests(unittest.TestCase):
         logout = alice.post("/logout", headers={"X-CSRF-Token": csrf})
         self.assertEqual(302, logout.status_code)
         self.assertEqual(401, alice.get("/api/logbook").status_code)
+
+    def test_account_revisions_and_archive_imports_stay_separate(self):
+        alice = self.app.test_client()
+        bob = self.app.test_client()
+        self.sign_in(alice, 101)
+        self.sign_in(bob, 202)
+        headers = {"X-CSRF-Token": alice.get("/api/csrf-token").get_json()["csrfToken"]}
+        initial = alice.get("/api/logbook").headers["ETag"]
+        payload = deepcopy(DEFAULT_LOGBOOK)
+        payload["trips"] = [{"id": "alice-trip", "title": "Alice only", "catches": []}]
+        saved = alice.put("/api/logbook", json=payload, headers={**headers, "If-Match": initial})
+        self.assertEqual(200, saved.status_code)
+        self.assertEqual(412, alice.put("/api/logbook", json=payload,
+                                     headers={**headers, "If-Match": initial}).status_code)
+        self.assertEqual(initial, bob.get("/api/logbook").headers["ETag"])
+        archive = alice.get("/api/archive").data
+        payload["trips"] = []
+        alice.put("/api/logbook", json=payload, headers={**headers, "If-Match": saved.headers["ETag"]})
+        restored = alice.post("/api/archive", data={"archive": (io.BytesIO(archive), "restore.logbook")},
+                              headers=headers, content_type="multipart/form-data")
+        self.assertEqual(200, restored.status_code)
+        self.assertEqual("alice-trip", alice.get("/api/logbook").get_json()["trips"][0]["id"])
+        self.assertEqual([], bob.get("/api/logbook").get_json()["trips"])
+
+    def test_account_queue_gallery_and_deletion_cannot_reach_other_accounts(self):
+        alice = self.app.test_client()
+        bob = self.app.test_client()
+        self.sign_in(alice, 101)
+        self.sign_in(bob, 202)
+        alice_headers = {"X-CSRF-Token": alice.get("/api/csrf-token").get_json()["csrfToken"]}
+        bob_headers = {"X-CSRF-Token": bob.get("/api/csrf-token").get_json()["csrfToken"]}
+        photo = io.BytesIO()
+        Image.new("RGB", (8, 8), "blue").save(photo, "JPEG")
+        photo.seek(0)
+        uploaded = alice.post("/api/uploads/queue", data={"file": (photo, "queue.jpg")},
+                              headers=alice_headers, content_type="multipart/form-data")
+        self.assertEqual(200, uploaded.status_code)
+        filename = uploaded.get_json()["filename"]
+        self.assertEqual([], bob.get("/api/photo-queue").get_json()["photos"])
+        self.assertEqual(200, bob.delete(f"/api/photo-queue/{filename}", headers=bob_headers).status_code)
+        response = alice.get(f"/uploads/queue/{filename}")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("no-store", response.headers["Cache-Control"])
+
+    def test_authenticated_website_rejects_shared_cloud_storage(self):
+        with self.assertRaisesRegex(RuntimeError, "not account scoped"):
+            create_app(AppConfig(data_dir=Path(self.directory.name), testing=True,
+                                 auth_required=True, storage_backend="cloud", cloud_api_url="https://cloud.invalid"))
 
     def test_allowlist_rejects_unlisted_account(self):
         self.app.config["GITLAB_ALLOWED_USER_IDS"] = "101"

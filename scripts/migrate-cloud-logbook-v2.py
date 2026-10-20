@@ -18,13 +18,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend import cloud_storage
-from backend.logbook_store import _COLLECTION_KEYS, validate_logbook
+from backend.logbook_store import COLLECTION_KEYS, validate_logbook
 from scripts.migrate_logbook_v2 import MigrationError, audit_document, migrate_document
 
 
 def _record_counts(document: dict) -> dict[str, int]:
     counts = {}
-    for key in _COLLECTION_KEYS:
+    for key in COLLECTION_KEYS:
         value = document.get(key, [])
         if not isinstance(value, list):
             raise MigrationError(f"Cloud {key} collection is not a list; refusing a potentially lossy migration.")

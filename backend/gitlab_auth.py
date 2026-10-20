@@ -59,8 +59,7 @@ def configure_gitlab_auth(app: Flask) -> None:
     app.config.setdefault("AUTH_REQUIRED", not app.config.get("TESTING", False))
     app.config.setdefault("AUTH_DATA_DIR", os.environ.get("FISH_DATA_DIR", "") or None)
     if app.config["AUTH_DATA_DIR"] is None:
-        from .backend_config import DATA_DIR
-        app.config["AUTH_DATA_DIR"] = DATA_DIR
+        app.config["AUTH_DATA_DIR"] = app.extensions["fish.config"].data_dir
     app.config.setdefault("GITLAB_URL", os.environ.get("GITLAB_URL", "https://gitlab.com"))
     app.config.setdefault("GITLAB_CLIENT_ID", os.environ.get("GITLAB_CLIENT_ID", ""))
     app.config.setdefault("GITLAB_CLIENT_SECRET", os.environ.get("GITLAB_CLIENT_SECRET", ""))

@@ -1,12 +1,22 @@
 .git/
 .idea/
 .venv/
+node_modules/
 __pycache__/
 *.py[cod]
 
-# Keep private/local logbook data out of images.
-data/logbook.json
+# Keep private/local logbook data and generated output out of images.
+data/
 backups/
+static/dist/
+standalone.html
+test-results/
+playwright-report/
+
+# OAuth configuration stays on the deployment host.
+.env
+.oauth.env
+.oauth.env.*
 
 # Local/editor noise.
 .DS_Store
