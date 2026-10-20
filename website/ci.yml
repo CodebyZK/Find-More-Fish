@@ -117,10 +117,10 @@ deploy_production:
       : "${DEPLOY_USER:?DEPLOY_USER must be configured}"
       : "${DEPLOY_PATH:?DEPLOY_PATH must be configured}"
       : "${DEPLOY_DATA_PATH:?DEPLOY_DATA_PATH must be configured}"
-      : "${GITLAB_URL:?GITLAB_URL must be configured for the self-hosted OAuth provider}"
-      : "${GITLAB_CLIENT_ID:?GITLAB_CLIENT_ID must be configured as a protected production variable}"
-      : "${GITLAB_CLIENT_SECRET:?GITLAB_CLIENT_SECRET must be configured as a protected production variable}"
-      : "${GITLAB_REDIRECT_URI:?GITLAB_REDIRECT_URI must be configured as a protected production variable}"
+      # Public URLs come from this GitLab instance and the production website.
+      # Project variables can still override either value.
+      export GITLAB_URL="${GITLAB_URL:-${CI_SERVER_URL:?Set GITLAB_URL or provide CI_SERVER_URL}}"
+      export GITLAB_REDIRECT_URI="${GITLAB_REDIRECT_URI:-https://fish.zionkoudijs.com/auth/gitlab/callback}"
       umask 077
       oauth_env=$(mktemp)
       trap 'rm -f "$oauth_env"' EXIT
@@ -128,12 +128,15 @@ deploy_production:
       import os
       import sys
 
-      values = {
-          "GITLAB_URL": os.environ["GITLAB_URL"],
-          "GITLAB_CLIENT_ID": os.environ["GITLAB_CLIENT_ID"],
-          "GITLAB_CLIENT_SECRET": os.environ["GITLAB_CLIENT_SECRET"],
-          "GITLAB_REDIRECT_URI": os.environ["GITLAB_REDIRECT_URI"],
-      }
+      required = ("GITLAB_URL", "GITLAB_CLIENT_ID", "GITLAB_CLIENT_SECRET", "GITLAB_REDIRECT_URI")
+      missing = [key for key in required if not os.environ.get(key, "").strip()]
+      if missing:
+          raise SystemExit(
+              "Missing production OAuth variables: " + ", ".join(missing)
+              + ". Configure them in GitLab Settings > CI/CD > Variables with production scope; "
+              "protected variables require the Website branch to be protected."
+          )
+      values = {key: os.environ[key] for key in required}
       if os.environ.get("GITLAB_ALLOWED_USER_IDS"):
           values["GITLAB_ALLOWED_USER_IDS"] = os.environ["GITLAB_ALLOWED_USER_IDS"]
       for key, value in values.items():

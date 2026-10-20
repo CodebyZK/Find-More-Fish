@@ -71,3 +71,23 @@ Mobile schema freshness and the local Python environment remain separate setup c
 Shared README.md and docs/ follow main to avoid repeated documentation conflicts.
 Run python website/scripts/check-shared-boundary.py after merging to catch accidental
 website edits in shared core files. The optional argument selects an upstream ref.
+
+## Production OAuth settings
+
+The deployment uses CI_SERVER_URL as the default GitLab provider and
+https://fish.zionkoudijs.com/auth/gitlab/callback as the default callback.
+GITLAB_URL and GITLAB_REDIRECT_URI can override these public URLs.
+
+Register an OAuth application on that GitLab instance with the exact callback and
+read_user scope. In the desktop project's Settings > CI/CD > Variables, configure:
+
+| Variable | Value | Visibility |
+| --- | --- | --- |
+| GITLAB_CLIENT_ID | Application ID from the registered OAuth application | Masked |
+| GITLAB_CLIENT_SECRET | Application secret from that same application | Masked and hidden |
+| GITLAB_ALLOWED_USER_IDS | Optional comma-separated account IDs | Optional |
+
+Use production environment scope. If variables are protected, Website must be a
+protected branch. The deploy job reports all missing OAuth variables before
+contacting the production host. It writes credentials only to the private OAuth
+environment file. Keep client secrets out of repository files and chat messages.
