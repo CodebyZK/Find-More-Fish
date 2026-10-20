@@ -109,9 +109,10 @@ logbook data are read by this operation.
 Origin verification sends the existing edge proxy's X-Forwarded-Proto: https
 header, avoiding the origin's HTTP-to-HTTPS redirect. The edge can reject automated
 public probes from the production host, so verify the public login separately in
-a browser; the helper never changes edge protections. When the proxy helper
-changes, website_proxy_migration can apply the repair to an already-authenticated
-running Website container using the existing deployment SSH and sudo permissions.
+a browser; the helper never changes edge protections. The optional manual
+website_proxy_migration job can repair an already-authenticated running Website
+container using the existing deployment SSH and sudo permissions. Normal pushes
+apply the idempotent configuration step after the full deployment checks pass.
 
 The optional website_proxy_inspection CI job checks the local upstream and lists
 routing/authentication directives using the existing deployment connection.

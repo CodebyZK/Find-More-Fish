@@ -199,19 +199,18 @@ website_proxy_inspection:
   script:
     - ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" /bin/sh -s < website/scripts/inspect-proxy.sh
 
-# Repair the proxy around an already-running, authenticated Website container.
+# Optional repair around an already-running, authenticated Website container.
 # The script verifies that prerequisite before making any Nginx change.
 website_proxy_migration:
   extends: deploy_production
-  stage: .pre
   needs: []
   environment:
     name: production
     action: prepare
   rules:
     - if: '$CI_COMMIT_BRANCH == "Website"'
-      changes:
-        - website/scripts/configure-proxy.py
+      when: manual
+      allow_failure: true
   script:
     - ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" sudo -n python3 - < website/scripts/configure-proxy.py
 
