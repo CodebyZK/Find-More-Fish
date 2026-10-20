@@ -16,13 +16,17 @@ Invoke-Check "Shared unit tests" { & npm.cmd test }
 Invoke-Check "Shared frontend" { & npm.cmd run build }
 Invoke-Check "Shared standalone" { & $pythonPath scripts/build-standalone.py }
 $previousTestPython = $env:FISH_TEST_PYTHON
+$previousAppPort = $env:PORT
 try {
   $env:FISH_TEST_PYTHON = $pythonPath
+  # Exercise the app port inherited in CI; Playwright must override it per suite.
+  $env:PORT = "8080"
   Invoke-Check "Shared browser tests" { & npm.cmd run test:e2e }
   Invoke-Check "Website frontend" { & node website/build.mjs }
   Invoke-Check "Website runtime tests" { & node --test website/tests/*.test.mjs }
   Invoke-Check "Website browser tests" { & npm.cmd exec -- playwright test --config website/playwright.config.cjs }
 } finally {
   $env:FISH_TEST_PYTHON = $previousTestPython
+  $env:PORT = $previousAppPort
 }
 Write-Output "Shared and website checks passed. Website assets are built."

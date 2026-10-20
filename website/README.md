@@ -41,6 +41,9 @@ replace browser globals or copy the shared application.
 Pass -Python <path> to select an existing Python 3.13 environment. Browser tests
 use temporary data and a fake OAuth provider defined only in tests/fixture_server.py.
 The website tests live separately from the shared tests and run in dedicated CI jobs.
+Both Playwright configurations pin their child-server PORT to their base URL, even
+when CI exports PORT=8080. CI captures failure artifacts under test-results/ inside
+the checkout so GitLab can upload screenshots, traces, and reports.
 The check script runs both app modes and leaves the website frontend built.
 
 ## Container and CI

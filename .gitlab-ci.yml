@@ -72,6 +72,8 @@ build_frontend:
 
 browser_smoke_tests:
   stage: smoke_test
+  variables:
+    PW_ARTIFACTS_DIR: "$CI_PROJECT_DIR/test-results/shared-browser"
   image: python:3.13
   needs:
     - build_frontend
@@ -88,7 +90,7 @@ browser_smoke_tests:
   artifacts:
     when: on_failure
     paths:
-      - /tmp/fishing-logbook-playwright/
+      - test-results/shared-browser/
     expire_in: 3 days
 
 docker_compose_config_check:

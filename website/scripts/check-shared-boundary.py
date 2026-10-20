@@ -6,12 +6,13 @@ ROOT = Path(__file__).resolve().parents[2]
 ALLOWED = {
     "backend/app_factory.py", "templates/partials/layout/topbar.html",
     "scripts/build-frontend.mjs", "Dockerfile", ".gitlab-ci.yml", "AGENTS.md",
+    "playwright.config.js",  # Shared CI port isolation and artifact configuration.
     # General clean-checkout / locale fixes inherited from the initial merge.
     "tests/leaderboard.test.js", "tests/great-lakes-animation.test.js",
     "tests/great-lakes-current-inspection.test.js",
 }
 SCOPES = ["backend", "static", "templates", "schema", "scripts", "tests", "docs",
-          "server.py", "docker-compose.yml", "Dockerfile", ".gitlab-ci.yml", "README.md", "AGENTS.md"]
+          "server.py", "playwright.config.js", "docker-compose.yml", "Dockerfile", ".gitlab-ci.yml", "README.md", "AGENTS.md"]
 def main() -> int:
     upstream = sys.argv[1] if len(sys.argv) > 1 else "origin/main"
     result = subprocess.run(["git", "diff", "--name-only", upstream, "--", *SCOPES],

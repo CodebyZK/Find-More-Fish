@@ -29,6 +29,8 @@ website_compose_check:
 
 website_browser_tests:
   stage: smoke_test
+  variables:
+    PW_ARTIFACTS_DIR: "$CI_PROJECT_DIR/test-results/website-browser"
   image: python:3.13
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg
@@ -43,6 +45,11 @@ website_browser_tests:
     - node --test website/tests/*.test.mjs
     - npx playwright install --with-deps chromium
     - CI=1 npx playwright test --config website/playwright.config.cjs
+  artifacts:
+    when: on_failure
+    paths:
+      - test-results/website-browser/
+    expire_in: 3 days
 
 deploy_production:
   stage: .post
