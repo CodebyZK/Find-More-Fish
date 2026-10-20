@@ -180,6 +180,22 @@ class GitLabAuthTests(unittest.TestCase):
         self.assertNotIn(b'id="logoutButton"', client.get("/trips").data)
         self.assertNotIn("website.accounts", shared.extensions)
 
+    def test_unconfigured_login_has_a_friendly_unavailable_state(self):
+        self.app.config["GITLAB_CLIENT_ID"] = ""
+        page = self.app.test_client().get("/login")
+        self.assertEqual(200, page.status_code)
+        self.assertIn(b"Sign-in is temporarily unavailable.", page.data)
+        self.assertNotIn(b"Continue with GitLab", page.data)
+        self.assertNotIn(b"GITLAB_CLIENT", page.data)
+
+    def test_login_error_is_escaped_and_destination_is_preserved(self):
+        page = self.app.test_client().get("/login", query_string={
+            "error": '<script>alert("unsafe")</script>', "next": "/map",
+        })
+        self.assertNotIn(b"<script>", page.data)
+        self.assertIn(b"&lt;script&gt;", page.data)
+        self.assertIn(b"next=/map", page.data)
+
     def test_allowlist_rejects_unlisted_account(self):
         self.app.config["GITLAB_ALLOWED_USER_IDS"] = "101"
         client = self.app.test_client()

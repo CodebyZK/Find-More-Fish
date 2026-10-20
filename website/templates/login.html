@@ -4,22 +4,84 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
-    <title>Sign in · Fishing Logbook</title>
+    <meta name="theme-color" content="#f6f8f7" />
+    <title>Sign in · Find More Fish</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('website.static', filename='img/fish-mark.svg') }}" />
     <link rel="stylesheet" href="{{ url_for('website.static', filename='css/login.css') }}" />
   </head>
   <body>
-    <main class="login-shell">
-      <div class="login-mark" aria-hidden="true">↝</div>
-      <p class="eyebrow">Fishing Logbook</p>
-      <h1>Your time on the water, all in one place.</h1>
-      <p class="intro">Sign in to keep your trips, catches, gear, and photos in your private logbook.</p>
-      {% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}
-      {% if configured %}
-        <a class="login-button" href="{{ url_for('gitlab_login', next=next_path) }}">Continue with GitLab <span aria-hidden="true">→</span></a>
-      {% else %}
-        <p class="login-error" role="alert">GitLab sign-in has not been configured on this server yet.</p>
-      {% endif %}
-      <p class="login-note">Your GitLab account identifies your logbook. Fishing Logbook only requests access to your basic profile.</p>
-    </main>
+    <div class="login-page">
+      <header class="site-header">
+        <a class="brand" href="/" aria-label="Find More Fish home">
+          <img src="{{ url_for('website.static', filename='img/fish-mark.svg') }}" width="42" height="42" alt="" />
+          <span>Find More Fish<span class="brand-caption">Your fishing logbook</span></span>
+        </a>
+        <span class="site-address">fish.zionkoudijs.com</span>
+      </header>
+
+      <main class="login-layout">
+        <section class="story-panel" aria-labelledby="story-heading">
+          <div class="story-copy">
+            <p class="eyebrow">For days on the water</p>
+            <h2 id="story-heading">Every trip,<br />worth keeping.</h2>
+            <p class="story-description">The catches, the places, the setup that worked.<br class="desktop-break" /> Keep it all in one fishing logbook.</p>
+          </div>
+
+          <svg class="water-art" viewBox="0 0 600 390" fill="none" aria-hidden="true" focusable="false">
+            <g stroke="currentColor" stroke-width="1.2">
+              <path d="M-90 230C30 89 104 320 249 227S433 42 559 134s160 156 226 58" />
+              <path d="M-90 250C30 109 104 340 249 247S433 62 559 154s160 156 226 58" />
+              <path d="M-90 270C30 129 104 360 249 267S433 82 559 174s160 156 226 58" />
+              <path d="M-90 290C30 149 104 380 249 287S433 102 559 194s160 156 226 58" />
+              <path d="M-90 310C30 169 104 400 249 307S433 122 559 214s160 156 226 58" />
+              <path d="M-90 330C30 189 104 420 249 327S433 142 559 234s160 156 226 58" />
+              <path d="M-90 350C30 209 104 440 249 347S433 162 559 254s160 156 226 58" />
+              <path d="M-90 370C30 229 104 460 249 367S433 182 559 274s160 156 226 58" />
+              <path d="M-90 390C30 249 104 480 249 387S433 202 559 294s160 156 226 58" />
+              <path d="M-90 410C30 269 104 500 249 407S433 222 559 314s160 156 226 58" />
+              <path d="M-90 430C30 289 104 520 249 427S433 242 559 334s160 156 226 58" />
+            </g>
+            <circle cx="388" cy="139" r="28" stroke="#74bda5" stroke-opacity=".3" />
+            <circle cx="388" cy="139" r="18" stroke="#74bda5" stroke-opacity=".55" />
+            <circle cx="388" cy="139" r="5" fill="#a4dec7" />
+            <path d="M388 96v12m0 62v12m-43-43h12m62 0h12" stroke="#74bda5" stroke-linecap="round" />
+          </svg>
+          <div class="story-footer"><span class="water-dot" aria-hidden="true"></span>A record of your time on the water.</div>
+        </section>
+
+        <section class="sign-in-panel" aria-labelledby="login-heading">
+          <div class="sign-in-content">
+            <p class="login-kicker">Your next chapter</p>
+            <h1 id="login-heading">Welcome back.</h1>
+            <p class="login-intro">Sign in to pick up where you left off.</p>
+
+            {% if error %}
+              <div class="login-message login-error" role="alert">
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="7.25" stroke="currentColor" stroke-width="1.5" /><path d="M10 6.5v4m0 3h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" /></svg>
+                <p>{{ error }}</p>
+              </div>
+            {% endif %}
+
+            {% if configured %}
+              <a class="login-button" href="{{ url_for('gitlab_login', next=next_path) }}">
+                <span>Continue with GitLab</span>
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </a>
+              <p class="first-visit">First time here? Sign in to start your own logbook.</p>
+            {% else %}
+              <div class="login-message login-unavailable" role="status">
+                <p>Sign-in is temporarily unavailable.<br />Please try again later.</p>
+              </div>
+            {% endif %}
+
+            <div class="privacy-note">
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="4.5" y="8.5" width="11" height="8" rx="2" stroke="currentColor" stroke-width="1.4" /><path d="M7 8.5v-3a3 3 0 0 1 6 0v3" stroke="currentColor" stroke-width="1.4" /><circle cx="10" cy="12.5" r="1" fill="currentColor" /></svg>
+              <div><p>Your logbook stays yours.</p><span>We only request your basic GitLab profile.<br />Your trips and photos stay in your own account.</span></div>
+            </div>
+          </div>
+        </section>
+      </main>
+      <footer class="site-footer"><span>Find More Fish</span><span>Good days. Great records.</span></footer>
+    </div>
   </body>
 </html>
