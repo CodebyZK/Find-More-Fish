@@ -106,5 +106,10 @@ account needs write permission for that site (or existing noninteractive sudo
 permission), plus permission to validate and reload Nginx. No credentials or
 logbook data are read by this operation.
 
+Verification uses the public HTTPS URL, including the existing edge proxy, rather
+than assuming the origin's HTTP response is identical. When the proxy helper
+changes, website_proxy_migration can apply the repair to an already-authenticated
+running Website container using the existing deployment SSH and sudo permissions.
+
 The optional website_proxy_inspection CI job checks the local upstream and lists
 routing/authentication directives using the existing deployment connection.

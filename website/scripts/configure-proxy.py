@@ -27,8 +27,8 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def response(port: int, path: str) -> tuple[int, object, str]:
-    request = Request(f"http://127.0.0.1:{port}{path}", headers={"Host": DOMAIN})
+def response(origin: str, path: str) -> tuple[int, object, str]:
+    request = Request(f"{origin}{path}", headers={"Host": DOMAIN})
     try:
         result = build_opener(NoRedirect).open(request, timeout=15)
     except HTTPError as error:
@@ -37,17 +37,17 @@ def response(port: int, path: str) -> tuple[int, object, str]:
         return result.status, result.headers, result.read(65536).decode("utf-8", errors="replace")
 
 
-def verify_auth(port: int) -> None:
-    status, headers, page = response(port, "/login")
+def verify_auth(origin: str) -> None:
+    status, headers, page = response(origin, "/login")
     if status != 200 or "Continue with GitLab" not in page or headers.get("WWW-Authenticate"):
-        raise RuntimeError(f"Port {port} does not serve the configured GitLab login")
+        raise RuntimeError(f"{origin} does not serve the configured GitLab login (HTTP {status}, redirect {headers.get('Location', 'none')})")
     for path in ("/api/csrf-token", "/uploads/website-auth-check.jpg"):
-        status, headers, _ = response(port, path)
+        status, headers, _ = response(origin, path)
         if status != 401 or headers.get("WWW-Authenticate"):
-            raise RuntimeError(f"Port {port} does not enforce app authentication for {path}")
-    status, headers, _ = response(port, "/trips")
+            raise RuntimeError(f"{origin} does not enforce app authentication for {path} (HTTP {status})")
+    status, headers, _ = response(origin, "/trips")
     if status != 302 or not headers.get("Location", "").startswith("/login"):
-        raise RuntimeError(f"Port {port} does not redirect signed-out visitors to login")
+        raise RuntimeError(f"{origin} does not redirect signed-out visitors to login (HTTP {status})")
 
 
 def admin_command(command: list[str]) -> None:
@@ -62,7 +62,9 @@ def admin_command(command: list[str]) -> None:
 def verify_proxy() -> None:
     for attempt in range(10):
         try:
-            verify_auth(80)
+            # Check the actual public HTTPS path. Origin HTTP can legitimately
+            # redirect or depend on the headers supplied by the TLS proxy.
+            verify_auth(f"https://{DOMAIN}")
             return
         except Exception:
             if attempt == 9:
@@ -72,7 +74,11 @@ def verify_proxy() -> None:
 
 def main() -> None:
     # Do this before requesting privilege or changing the Nginx configuration.
-    verify_auth(8081)
+    verify_auth("http://127.0.0.1:8081")
+    status, headers, _ = response("http://127.0.0.1:80", "/login")
+    print(f"Origin HTTP login: {status}; redirect: {headers.get('Location', 'none')}", flush=True)
+    # Establish working DNS and verified TLS before making any live change.
+    response(f"https://{DOMAIN}", "/login")
     target = SITE.resolve(strict=True)
     original = target.read_text(encoding="utf-8")
     uncommented = re.sub(r"(?m)#.*$", "", original)
